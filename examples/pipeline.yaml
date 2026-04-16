@@ -1,0 +1,57 @@
+#!/usr/bin/env docker agent run
+
+# Deterministic Pipeline Example
+
+agents:
+  # ── Orchestrator ─────────────────────────────────────────────────────────────
+  # The root LLM chooses which pipeline to invoke. Once chosen, execution is
+  # entirely code-driven — the root LLM plays no further role.
+  root:
+    model: anthropic/claude-sonnet-4-5
+    description: Content orchestration assistant
+    sub_agents:
+      - content_pipeline
+    instruction: |
+      You are a content orchestration assistant.
+      When the user asks you to write or research something, transfer the task
+      to content_pipeline. Pass the user's request verbatim as the task.
+
+  # ── Deterministic pipeline ───────────────────────────────────────────────────
+  # No model field required — this agent is a pure sequencer.
+  content_pipeline:
+    description: Deterministic content creation pipeline (research → write → edit)
+    instruction: Runs a deterministic three-step content pipeline.
+    pipeline:
+      - agent: researcher
+        task: "Research the following topic thoroughly and return a structured summary of key facts, sources, and insights:\n\n{{input}}"
+      - agent: writer
+        task: "Using the research below, write a well-structured, engaging article. Research:\n\n{{output}}"
+      - agent: editor
+        task: "Edit and polish the draft article below. Improve clarity, flow, and grammar without changing the meaning:\n\n{{output}}"
+
+  # ── Worker agents ─────────────────────────────────────────────────────────────
+  researcher:
+    model: anthropic/claude-sonnet-4-5
+    description: Research specialist
+    toolsets:
+      - type: fetch
+    instruction: |
+      You are a research specialist. Thoroughly investigate the given topic,
+      fetch relevant sources, and return a structured summary of key facts,
+      statistics, and insights. Always cite your sources.
+
+  writer:
+    model: anthropic/claude-sonnet-4-5
+    description: Professional content writer
+    instruction: |
+      You are a professional content writer. Transform research notes into a
+      polished, engaging article. Use clear headings, concrete examples, and
+      an accessible tone. Target length: 400–600 words.
+
+  editor:
+    model: openai/gpt-4o-mini
+    description: Copy editor
+    instruction: |
+      You are a meticulous copy editor. Polish the draft for clarity, flow,
+      and grammar. Correct any errors, improve sentence variety, and ensure
+      the article reads naturally. Do not change factual content.

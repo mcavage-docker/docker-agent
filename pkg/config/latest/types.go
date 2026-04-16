@@ -356,6 +356,19 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(d.String())
 }
 
+// PipelineStep defines a single step in a deterministic pipeline.
+// Steps are executed sequentially by the runtime; the LLM is not involved
+// in routing between steps.
+type PipelineStep struct {
+	// Agent is the name of the agent to run for this step.
+	Agent string `json:"agent"`
+	// Task is the task description passed to the agent.
+	// Supports template variables:
+	//   {{input}}  — the original user input to the pipeline
+	//   {{output}} — the output of the previous step (same as {{input}} for the first step)
+	Task string `json:"task,omitempty"`
+}
+
 // AgentConfig represents a single agent configuration
 type AgentConfig struct {
 	Name           string
@@ -367,6 +380,11 @@ type AgentConfig struct {
 	Instruction    string          `json:"instruction,omitempty"`
 	SubAgents      []string        `json:"sub_agents,omitempty"`
 	Handoffs       []string        `json:"handoffs,omitempty"`
+	// Pipeline defines an ordered list of steps to execute deterministically.
+	// When set, the runtime executes each step sequentially without LLM-driven
+	// routing. Pipeline agents do not require a model field.
+	// Pipeline is mutually exclusive with sub_agents and handoffs.
+	Pipeline []PipelineStep `json:"pipeline,omitempty"`
 
 	AddDate                 bool              `json:"add_date,omitempty"`
 	AddEnvironmentInfo      bool              `json:"add_environment_info,omitempty"`

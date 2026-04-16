@@ -169,33 +169,38 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			agent.WithHooks(config.MergeHooks(agentConfig.Hooks, cliHooks)),
 		}
 
-		models, err := getModelsForAgent(ctx, cfg, &agentConfig, autoModel, runConfig)
-		if err != nil {
-			// Return auto model fallback errors and DMR not installed errors directly
-			// without wrapping to provide cleaner messages
-			if _, ok := errors.AsType[*config.AutoModelFallbackError](err); ok || errors.Is(err, dmr.ErrNotInstalled) {
-				return nil, err
-			}
-			return nil, fmt.Errorf("failed to get models: %w", err)
-		}
-		for _, model := range models {
-			opts = append(opts, agent.WithModel(model))
-		}
-
-		// Load fallback models if configured
-		fallbackModelRefs := agentConfig.GetFallbackModels()
-		if len(fallbackModelRefs) > 0 {
-			fallbackModels, err := getFallbackModelsForAgent(ctx, cfg, &agentConfig, runConfig)
+		// Pipeline agents are pure sequencers and do not require a model.
+		if len(agentConfig.Pipeline) == 0 {
+			models, err := getModelsForAgent(ctx, cfg, &agentConfig, autoModel, runConfig)
 			if err != nil {
-				return nil, fmt.Errorf("failed to get fallback models: %w", err)
+				// Return auto model fallback errors and DMR not installed errors directly
+				// without wrapping to provide cleaner messages
+				if _, ok := errors.AsType[*config.AutoModelFallbackError](err); ok || errors.Is(err, dmr.ErrNotInstalled) {
+					return nil, err
+				}
+				return nil, fmt.Errorf("failed to get models: %w", err)
 			}
-			for _, model := range fallbackModels {
-				opts = append(opts, agent.WithFallbackModel(model))
+			for _, model := range models {
+				opts = append(opts, agent.WithModel(model))
 			}
-			opts = append(opts,
-				agent.WithFallbackRetries(agentConfig.GetFallbackRetries()),
-				agent.WithFallbackCooldown(agentConfig.GetFallbackCooldown()),
-			)
+
+			// Load fallback models if configured
+			fallbackModelRefs := agentConfig.GetFallbackModels()
+			if len(fallbackModelRefs) > 0 {
+				fallbackModels, err := getFallbackModelsForAgent(ctx, cfg, &agentConfig, runConfig)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get fallback models: %w", err)
+				}
+				for _, model := range fallbackModels {
+					opts = append(opts, agent.WithFallbackModel(model))
+				}
+				opts = append(opts,
+					agent.WithFallbackRetries(agentConfig.GetFallbackRetries()),
+					agent.WithFallbackCooldown(agentConfig.GetFallbackCooldown()),
+				)
+			}
+		} else {
+			opts = append(opts, agent.WithPipeline(agentConfig.Pipeline))
 		}
 
 		agentTools, warnings := getToolsForAgent(ctx, &agentConfig, parentDir, runConfig, loadOpts.toolsetRegistry, configName)
@@ -244,6 +249,15 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		}
 		if len(handoffs) > 0 {
 			agent.WithHandoffs(handoffs...)(a)
+		}
+	}
+
+	// Validate pipeline step references — all named agents must be locally defined.
+	for _, agentConfig := range cfg.Agents {
+		for i, step := range agentConfig.Pipeline {
+			if _, ok := agentsByName[step.Agent]; !ok {
+				return nil, fmt.Errorf("agent %q: pipeline[%d]: agent %q not found", agentConfig.Name, i, step.Agent)
+			}
 		}
 	}
 

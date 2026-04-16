@@ -710,6 +710,9 @@ func (r *LocalRuntime) executeOnUserInputHooks(ctx context.Context, sessionID, l
 
 // getAgentModelID returns the model ID for an agent, or empty string if no model is set.
 func getAgentModelID(a *agent.Agent) string {
+	if !a.HasModel() {
+		return ""
+	}
 	if model := a.Model(); model != nil {
 		return model.ID()
 	}

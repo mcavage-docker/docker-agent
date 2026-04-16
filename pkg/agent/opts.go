@@ -172,3 +172,11 @@ func WithHooks(hooks *latest.HooksConfig) Opt {
 		a.hooks = hooks
 	}
 }
+
+// WithPipeline configures a deterministic pipeline for this agent.
+// When set, the runtime executes each step sequentially without LLM-driven routing.
+func WithPipeline(steps []latest.PipelineStep) Opt {
+	return func(a *Agent) {
+		a.pipeline = steps
+	}
+}

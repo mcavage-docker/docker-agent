@@ -16,7 +16,8 @@
         "4",
         "5",
         "6",
-        "7"
+        "7",
+        "8"
       ],
       "examples": [
         "0",
@@ -256,6 +257,25 @@
           "description": "List of agents this agent can hand off the conversation to. Can be names of agents defined in this config, external references (OCI images like 'namespace/repo' or URLs), or named external references using 'name:reference' syntax (e.g. 'reviewer:agentcatalog/review-pr'). External agents without an explicit name are named after their last path segment.",
           "items": {
             "type": "string"
+          }
+        },
+        "pipeline": {
+          "type": "array",
+          "description": "Ordered list of steps executed deterministically by the runtime. No LLM is involved in routing between steps. Each step runs in an isolated sub-session and its output is available as {{output}} in the next step's task template. Mutually exclusive with sub_agents and handoffs. A pipeline agent does not require a model field.",
+          "items": {
+            "type": "object",
+            "required": ["agent"],
+            "additionalProperties": false,
+            "properties": {
+              "agent": {
+                "type": "string",
+                "description": "Name of the locally-defined agent to run for this step."
+              },
+              "task": {
+                "type": "string",
+                "description": "Task description passed to the agent. Supports {{input}} (original user input) and {{output}} (previous step's output). If omitted, the previous step's output is forwarded verbatim."
+              }
+            }
           }
         },
         "add_date": {

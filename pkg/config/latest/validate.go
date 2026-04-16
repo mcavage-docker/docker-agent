@@ -2,6 +2,7 @@ package latest
 
 import (
 	"errors"
+	"fmt"
 )
 
 func (t *Config) UnmarshalYAML(unmarshal func(any) error) error {
@@ -20,6 +21,11 @@ func (t *Config) validate() error {
 
 		// Validate fallback config
 		if err := agent.validateFallback(); err != nil {
+			return err
+		}
+
+		// Validate pipeline
+		if err := agent.validatePipeline(); err != nil {
 			return err
 		}
 
@@ -52,6 +58,25 @@ func (a *AgentConfig) validateFallback() error {
 		return errors.New("fallback.cooldown must be non-negative")
 	}
 
+	return nil
+}
+
+// validatePipeline validates the pipeline configuration for an agent.
+func (a *AgentConfig) validatePipeline() error {
+	if len(a.Pipeline) == 0 {
+		return nil
+	}
+	if len(a.SubAgents) > 0 {
+		return fmt.Errorf("agent %q: pipeline and sub_agents are mutually exclusive", a.Name)
+	}
+	if len(a.Handoffs) > 0 {
+		return fmt.Errorf("agent %q: pipeline and handoffs are mutually exclusive", a.Name)
+	}
+	for i, step := range a.Pipeline {
+		if step.Agent == "" {
+			return fmt.Errorf("agent %q: pipeline[%d]: agent name is required", a.Name, i)
+		}
+	}
 	return nil
 }
 

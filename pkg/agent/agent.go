@@ -29,6 +29,7 @@ type Agent struct {
 	subAgents               []*Agent
 	handoffs                []*Agent
 	parents                 []*Agent
+	pipeline                []latest.PipelineStep
 	addDate                 bool
 	addEnvironmentInfo      bool
 	addDescriptionParameter bool
@@ -122,6 +123,24 @@ func (a *Agent) Parents() []*Agent {
 // HasSubAgents checks if the agent has sub-agents
 func (a *Agent) HasSubAgents() bool {
 	return len(a.subAgents) > 0
+}
+
+// HasModel returns true if this agent has at least one model configured.
+func (a *Agent) HasModel() bool {
+	if overrides := a.modelOverrides.Load(); overrides != nil && len(*overrides) > 0 {
+		return true
+	}
+	return len(a.models) > 0
+}
+
+// HasPipeline returns true if this agent has a deterministic pipeline defined.
+func (a *Agent) HasPipeline() bool {
+	return len(a.pipeline) > 0
+}
+
+// Pipeline returns the deterministic pipeline steps configured for this agent.
+func (a *Agent) Pipeline() []latest.PipelineStep {
+	return a.pipeline
 }
 
 // Model returns the model to use for this agent.

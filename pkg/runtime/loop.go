@@ -119,6 +119,14 @@ func (r *LocalRuntime) RunStream(ctx context.Context, sess *session.Session) <-c
 
 		defer r.finalizeEventChannel(ctx, sess, prevElicitationCh, events)
 
+		// If the agent defines a deterministic pipeline, execute it directly
+		// without entering the LLM loop and return immediately.
+		// StreamStopped is emitted by the deferred finalizeEventChannel above.
+		if a.HasPipeline() {
+			r.runPipeline(ctx, sess, sessionSpan, events)
+			return
+		}
+
 		iteration := 0
 		// Use a runtime copy of maxIterations so we don't modify the session's persistent config
 		runtimeMaxIterations := sess.MaxIterations
