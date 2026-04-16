@@ -4,6 +4,8 @@
 #
 # Demonstrates both agent steps (LLM in a sub-session) and tool steps
 # (direct tool call, no LLM) in a single pipeline.
+# The pipeline starts by recalling relevant memories, then researches,
+# writes, and edits — all in a guaranteed, deterministic order.
 
 agents:
   # ── Orchestrator ─────────────────────────────────────────────────────────────
@@ -18,25 +20,24 @@ agents:
       to content_pipeline. Pass the user's request verbatim as the task.
 
   # ── Deterministic pipeline ───────────────────────────────────────────────────
-  # Mixes agent steps and tool steps. The pipeline agent owns the toolsets
+  # Mixes tool steps and agent steps. The pipeline agent owns the toolsets
   # used by tool steps.
   content_pipeline:
-    description: Deterministic content creation pipeline (fetch → research → write → edit)
+    description: Deterministic content creation pipeline (recall → research → write → edit)
     instruction: Runs a deterministic four-step content pipeline.
     toolsets:
-      - type: fetch
+      - type: memory
     pipeline:
-      # Step 1 — tool step: fetch raw data (no LLM, direct tool call)
-      - tool: fetch
+      # Step 1 — tool step: search memories for relevant context (no LLM)
+      - tool: search_memories
         args:
-          url: "https://en.wikipedia.org/wiki/{{input}}"
-          format: "text"
+          query: "{{input}}"
 
-      # Step 2 — agent step: summarise the fetched content
+      # Step 2 — agent step: research the topic with memory context
       - agent: researcher
-        task: "Summarise the key facts from this raw content about '{{input}}':\n\n{{output}}"
+        task: "Research the following topic. Here is relevant context from memory:\n\n{{output}}\n\nTopic: {{input}}"
 
-      # Step 3 — agent step: write an article from the summary
+      # Step 3 — agent step: write an article from the research
       - agent: writer
         task: "Using the research below, write a well-structured, engaging article. Research:\n\n{{output}}"
 
@@ -48,10 +49,12 @@ agents:
   researcher:
     model: anthropic/claude-sonnet-4-5
     description: Research specialist
+    toolsets:
+      - type: fetch
     instruction: |
       You are a research specialist. Extract the most important facts,
-      statistics, and insights from the raw content provided. Produce a
-      structured summary with clear sections.
+      statistics, and insights from any provided context and your own
+      knowledge. Produce a structured summary with clear sections.
 
   writer:
     model: anthropic/claude-sonnet-4-5
