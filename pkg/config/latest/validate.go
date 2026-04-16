@@ -73,8 +73,19 @@ func (a *AgentConfig) validatePipeline() error {
 		return fmt.Errorf("agent %q: pipeline and handoffs are mutually exclusive", a.Name)
 	}
 	for i, step := range a.Pipeline {
-		if step.Agent == "" {
-			return fmt.Errorf("agent %q: pipeline[%d]: agent name is required", a.Name, i)
+		hasAgent := step.Agent != ""
+		hasTool := step.Tool != ""
+		if !hasAgent && !hasTool {
+			return fmt.Errorf("agent %q: pipeline[%d]: must specify either agent or tool", a.Name, i)
+		}
+		if hasAgent && hasTool {
+			return fmt.Errorf("agent %q: pipeline[%d]: agent and tool are mutually exclusive", a.Name, i)
+		}
+		if hasTool && step.Task != "" {
+			return fmt.Errorf("agent %q: pipeline[%d]: task is not valid for tool steps (use args)", a.Name, i)
+		}
+		if hasAgent && len(step.Args) > 0 {
+			return fmt.Errorf("agent %q: pipeline[%d]: args is not valid for agent steps (use task)", a.Name, i)
 		}
 	}
 	return nil

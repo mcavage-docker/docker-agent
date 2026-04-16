@@ -261,19 +261,27 @@
         },
         "pipeline": {
           "type": "array",
-          "description": "Ordered list of steps executed deterministically by the runtime. No LLM is involved in routing between steps. Each step runs in an isolated sub-session and its output is available as {{output}} in the next step's task template. Mutually exclusive with sub_agents and handoffs. A pipeline agent does not require a model field.",
+          "description": "Ordered list of steps executed deterministically by the runtime. No LLM is involved in routing between steps. Each step is either an agent step (runs an LLM agent in a sub-session) or a tool step (calls a tool directly). Mutually exclusive with sub_agents and handoffs. A pipeline agent does not require a model field.",
           "items": {
             "type": "object",
-            "required": ["agent"],
             "additionalProperties": false,
             "properties": {
               "agent": {
                 "type": "string",
-                "description": "Name of the locally-defined agent to run for this step."
+                "description": "Name of the locally-defined agent to run for this step (agent step). Mutually exclusive with tool."
               },
               "task": {
                 "type": "string",
-                "description": "Task description passed to the agent. Supports {{input}} (original user input) and {{output}} (previous step's output). If omitted, the previous step's output is forwarded verbatim."
+                "description": "Task description passed to the agent (agent steps only). Supports {{input}} (original user input) and {{output}} (previous step's output). If omitted, the previous step's output is forwarded verbatim."
+              },
+              "tool": {
+                "type": "string",
+                "description": "Name of a tool to call directly with no LLM (tool step). The tool must be available in the pipeline agent's toolsets. Mutually exclusive with agent."
+              },
+              "args": {
+                "type": "object",
+                "description": "Arguments passed to the tool (tool steps only). String values support {{input}} and {{output}} template variables.",
+                "additionalProperties": true
               }
             }
           }

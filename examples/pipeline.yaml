@@ -1,11 +1,12 @@
 #!/usr/bin/env docker agent run
 
 # Deterministic Pipeline Example
+#
+# Demonstrates both agent steps (LLM in a sub-session) and tool steps
+# (direct tool call, no LLM) in a single pipeline.
 
 agents:
   # ── Orchestrator ─────────────────────────────────────────────────────────────
-  # The root LLM chooses which pipeline to invoke. Once chosen, execution is
-  # entirely code-driven — the root LLM plays no further role.
   root:
     model: anthropic/claude-sonnet-4-5
     description: Content orchestration assistant
@@ -17,15 +18,29 @@ agents:
       to content_pipeline. Pass the user's request verbatim as the task.
 
   # ── Deterministic pipeline ───────────────────────────────────────────────────
-  # No model field required — this agent is a pure sequencer.
+  # Mixes agent steps and tool steps. The pipeline agent owns the toolsets
+  # used by tool steps.
   content_pipeline:
-    description: Deterministic content creation pipeline (research → write → edit)
-    instruction: Runs a deterministic three-step content pipeline.
+    description: Deterministic content creation pipeline (fetch → research → write → edit)
+    instruction: Runs a deterministic four-step content pipeline.
+    toolsets:
+      - type: fetch
     pipeline:
+      # Step 1 — tool step: fetch raw data (no LLM, direct tool call)
+      - tool: fetch
+        args:
+          url: "https://en.wikipedia.org/wiki/{{input}}"
+          format: "text"
+
+      # Step 2 — agent step: summarise the fetched content
       - agent: researcher
-        task: "Research the following topic thoroughly and return a structured summary of key facts, sources, and insights:\n\n{{input}}"
+        task: "Summarise the key facts from this raw content about '{{input}}':\n\n{{output}}"
+
+      # Step 3 — agent step: write an article from the summary
       - agent: writer
         task: "Using the research below, write a well-structured, engaging article. Research:\n\n{{output}}"
+
+      # Step 4 — agent step: polish the draft
       - agent: editor
         task: "Edit and polish the draft article below. Improve clarity, flow, and grammar without changing the meaning:\n\n{{output}}"
 
@@ -33,12 +48,10 @@ agents:
   researcher:
     model: anthropic/claude-sonnet-4-5
     description: Research specialist
-    toolsets:
-      - type: fetch
     instruction: |
-      You are a research specialist. Thoroughly investigate the given topic,
-      fetch relevant sources, and return a structured summary of key facts,
-      statistics, and insights. Always cite your sources.
+      You are a research specialist. Extract the most important facts,
+      statistics, and insights from the raw content provided. Produce a
+      structured summary with clear sections.
 
   writer:
     model: anthropic/claude-sonnet-4-5

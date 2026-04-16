@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/docker/docker-agent/pkg/config/latest"
 )
 
 func TestRenderPipelineTemplate(t *testing.T) {
@@ -64,4 +66,68 @@ func TestRenderPipelineTemplate(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestRenderPipelineArgs(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   map[string]any
+		input  string
+		output string
+		want   map[string]any
+	}{
+		{
+			name:   "nil args",
+			args:   nil,
+			input:  "hello",
+			output: "world",
+			want:   nil,
+		},
+		{
+			name:   "empty args",
+			args:   map[string]any{},
+			input:  "hello",
+			output: "world",
+			want:   map[string]any{},
+		},
+		{
+			name:   "string values are rendered",
+			args:   map[string]any{"url": "https://example.com/search?q={{input}}", "format": "json"},
+			input:  "golang",
+			output: "ignored",
+			want:   map[string]any{"url": "https://example.com/search?q=golang", "format": "json"},
+		},
+		{
+			name:   "output template in args",
+			args:   map[string]any{"cmd": "echo '{{output}}' | wc -w"},
+			input:  "original",
+			output: "three word sentence",
+			want:   map[string]any{"cmd": "echo 'three word sentence' | wc -w"},
+		},
+		{
+			name:   "non-string values pass through",
+			args:   map[string]any{"timeout": 30, "verbose": true, "query": "{{input}}"},
+			input:  "search term",
+			output: "",
+			want:   map[string]any{"timeout": 30, "verbose": true, "query": "search term"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderPipelineArgs(tt.args, tt.input, tt.output)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestPipelineStepLabels(t *testing.T) {
+	steps := []latest.PipelineStep{
+		{Agent: "researcher"},
+		{Tool: "fetch"},
+		{Agent: "writer"},
+		{Tool: "shell"},
+	}
+	labels := pipelineStepLabels(steps)
+	assert.Equal(t, []string{"researcher", "fetch", "writer", "shell"}, labels)
 }

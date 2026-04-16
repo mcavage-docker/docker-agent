@@ -255,6 +255,10 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 	// Validate pipeline step references — all named agents must be locally defined.
 	for _, agentConfig := range cfg.Agents {
 		for i, step := range agentConfig.Pipeline {
+			// Tool steps don't reference agents — skip validation.
+			if step.Agent == "" {
+				continue
+			}
 			if _, ok := agentsByName[step.Agent]; !ok {
 				return nil, fmt.Errorf("agent %q: pipeline[%d]: agent %q not found", agentConfig.Name, i, step.Agent)
 			}

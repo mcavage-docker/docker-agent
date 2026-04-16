@@ -359,14 +359,26 @@ func (d Duration) MarshalJSON() ([]byte, error) {
 // PipelineStep defines a single step in a deterministic pipeline.
 // Steps are executed sequentially by the runtime; the LLM is not involved
 // in routing between steps.
+//
+// A step is either an agent step (runs an LLM agent in a sub-session) or a
+// tool step (calls a tool directly with no LLM). Exactly one of Agent or Tool
+// must be set.
 type PipelineStep struct {
-	// Agent is the name of the agent to run for this step.
-	Agent string `json:"agent"`
-	// Task is the task description passed to the agent.
+	// Agent is the name of the agent to run for this step (agent step).
+	// Mutually exclusive with Tool.
+	Agent string `json:"agent,omitempty"`
+	// Task is the task description passed to the agent (agent steps only).
 	// Supports template variables:
 	//   {{input}}  — the original user input to the pipeline
 	//   {{output}} — the output of the previous step (same as {{input}} for the first step)
 	Task string `json:"task,omitempty"`
+	// Tool is the name of a tool to call directly (tool step).
+	// The tool must be available in the pipeline agent's toolsets.
+	// Mutually exclusive with Agent.
+	Tool string `json:"tool,omitempty"`
+	// Args are the arguments passed to the tool (tool steps only).
+	// String values support {{input}} and {{output}} template variables.
+	Args map[string]any `json:"args,omitempty"`
 }
 
 // AgentConfig represents a single agent configuration
