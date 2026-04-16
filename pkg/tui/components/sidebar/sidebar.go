@@ -50,6 +50,7 @@ type Model interface {
 	SetAgentInfo(agentName, model, description string) tea.Cmd
 	SetTeamInfo(availableAgents []runtime.AgentDetails)
 	SetAgentSwitching(switching bool)
+	SetPipelineProgress(pipelineAgent string, stepIndex, totalSteps int, stepAgent string, stepAgents []string, status string)
 	SetToolsetInfo(availableTools int, loading bool)
 	SetSkillsInfo(availableSkills int)
 	SetSessionStarred(starred bool)
@@ -105,28 +106,35 @@ type ragIndexingState struct {
 
 // model implements Model
 type model struct {
-	width              int
-	height             int
-	xPos               int                       // absolute x position on screen
-	yPos               int                       // absolute y position on screen
-	layoutCfg          LayoutConfig              // layout configuration for spacing
-	sessionUsage       map[string]*runtime.Usage // sessionID -> latest usage snapshot
-	sessionAgent       map[string]string         // sessionID -> agent name
-	todoComp           *todotool.SidebarComponent
-	mcpInit            bool
-	ragIndexing        map[string]*ragIndexingState // strategy name -> indexing state
-	spinner            spinner.Spinner
-	spinnerActive      bool // true when spinner is registered with animation coordinator
-	mode               Mode
-	sessionTitle       string
-	sessionStarred     bool
-	sessionHasContent  bool // true when session has been used (has messages)
-	currentAgent       string
-	agentModel         string
-	agentDescription   string
-	availableAgents    []runtime.AgentDetails
-	agentSwitching     bool
-	availableTools     int
+	width             int
+	height            int
+	xPos              int                       // absolute x position on screen
+	yPos              int                       // absolute y position on screen
+	layoutCfg         LayoutConfig              // layout configuration for spacing
+	sessionUsage      map[string]*runtime.Usage // sessionID -> latest usage snapshot
+	sessionAgent      map[string]string         // sessionID -> agent name
+	todoComp          *todotool.SidebarComponent
+	mcpInit           bool
+	ragIndexing       map[string]*ragIndexingState // strategy name -> indexing state
+	spinner           spinner.Spinner
+	spinnerActive     bool // true when spinner is registered with animation coordinator
+	mode              Mode
+	sessionTitle      string
+	sessionStarred    bool
+	sessionHasContent bool // true when session has been used (has messages)
+	currentAgent      string
+	agentModel        string
+	agentDescription  string
+	availableAgents   []runtime.AgentDetails
+	agentSwitching    bool
+	availableTools    int
+
+	// Pipeline progress state
+	pipelineActive     bool     // true while a pipeline is running
+	pipelineAgent      string   // name of the pipeline orchestrator agent
+	pipelineStepAgents []string // ordered list of step agent names
+	pipelineStepIndex  int      // index of the currently running step
+	pipelineCompleted  []bool   // per-step completion flags
 	availableSkills    int
 	toolsLoading       bool // true when more tools may still be loading
 	sessionState       *service.SessionState
@@ -291,6 +299,35 @@ func (m *model) SetTeamInfo(availableAgents []runtime.AgentDetails) {
 // SetAgentSwitching sets whether an agent switch is in progress
 func (m *model) SetAgentSwitching(switching bool) {
 	m.agentSwitching = switching
+	m.invalidateCache()
+}
+
+// SetPipelineProgress updates the pipeline step progress state.
+func (m *model) SetPipelineProgress(pipelineAgent string, stepIndex, totalSteps int, stepAgent string, stepAgents []string, status string) {
+	m.pipelineActive = true
+	m.pipelineAgent = pipelineAgent
+	m.pipelineStepAgents = stepAgents
+	m.pipelineStepIndex = stepIndex
+
+	// Ensure the completed slice is the right size.
+	if len(m.pipelineCompleted) != totalSteps {
+		m.pipelineCompleted = make([]bool, totalSteps)
+	}
+
+	if status == "completed" {
+		m.pipelineCompleted[stepIndex] = true
+		// If all steps are done, mark pipeline as inactive.
+		allDone := true
+		for _, done := range m.pipelineCompleted {
+			if !done {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			m.pipelineActive = false
+		}
+	}
 	m.invalidateCache()
 }
 
@@ -667,6 +704,10 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		m.streamCancelled = false
 		m.workingAgent = msg.AgentName
 		m.currentSessionID = msg.SessionID
+		// Reset pipeline state for the new stream.
+		m.pipelineActive = false
+		m.pipelineStepAgents = nil
+		m.pipelineCompleted = nil
 		// If title hasn't been generated yet, show the title generation spinner
 		if !m.titleGenerated {
 			m.titleRegenerating = true
@@ -687,6 +728,9 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		return m, nil
 	case *runtime.AgentSwitchingEvent:
 		m.SetAgentSwitching(msg.Switching)
+		return m, nil
+	case *runtime.PipelineProgressEvent:
+		m.SetPipelineProgress(msg.PipelineAgent, msg.StepIndex, msg.TotalSteps, msg.StepAgent, msg.StepAgents, msg.Status)
 		return m, nil
 	case *runtime.ToolsetInfoEvent:
 		// Ignore loading state if stream was cancelled (stale event from before cancellation)
@@ -923,6 +967,7 @@ func (m *model) renderSections(contentWidth int) []string {
 	m.buildAgentClickZones(agentSectionStart, lines)
 
 	appendSection(m.toolsetInfo(contentWidth))
+	appendSection(m.pipelineInfo(contentWidth))
 
 	m.todoComp.SetSize(contentWidth)
 	appendSection(strings.TrimSuffix(m.todoComp.Render(), "\n"))
@@ -1252,6 +1297,36 @@ func (m *model) buildAgentClickZones(agentSectionStart int, lines []string) {
 }
 
 // toolsetInfo renders the current toolset status information
+// pipelineInfo renders the pipeline step progress indicator.
+func (m *model) pipelineInfo(contentWidth int) string {
+	if !m.pipelineActive && len(m.pipelineCompleted) == 0 {
+		return ""
+	}
+
+	var lines []string
+	for i, agent := range m.pipelineStepAgents {
+		var prefix string
+		var style lipgloss.Style
+
+		switch {
+		case i < len(m.pipelineCompleted) && m.pipelineCompleted[i]:
+			prefix = "✓"
+			style = styles.SuccessStyle
+		case m.pipelineActive && i == m.pipelineStepIndex:
+			prefix = "▶"
+			style = styles.ActiveStyle
+		default:
+			prefix = "○"
+			style = styles.MutedStyle
+		}
+
+		badge := styles.AgentBadgeStyleFor(agent).Render(agent)
+		lines = append(lines, style.Render(prefix)+" "+badge)
+	}
+
+	return m.renderTab("Pipeline", strings.Join(lines, "\n"), contentWidth)
+}
+
 func (m *model) toolsetInfo(contentWidth int) string {
 	var lines []string
 

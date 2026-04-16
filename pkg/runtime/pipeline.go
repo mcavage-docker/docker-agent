@@ -18,12 +18,19 @@ import (
 // StreamStopped events are handled by the outer RunStream envelope.
 func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, span trace.Span, events chan Event) {
 	a := r.CurrentAgent()
+	pipeline := a.Pipeline()
+
+	// Build the ordered list of step agent names for the TUI.
+	stepAgents := make([]string, len(pipeline))
+	for i, step := range pipeline {
+		stepAgents[i] = step.Agent
+	}
 
 	// Capture the original user input; it is available as {{input}} in every task template.
 	input := sess.GetLastUserMessageContent()
 	output := input
 
-	for i, step := range a.Pipeline() {
+	for i, step := range pipeline {
 		if ctx.Err() != nil {
 			return
 		}
@@ -48,6 +55,9 @@ func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, s
 			),
 		)
 
+		// Notify the TUI of pipeline progress: step started.
+		events <- PipelineProgress(a.Name(), i, len(pipeline), step.Agent, stepAgents, "started")
+
 		// Notify the TUI that we are switching into the child agent.
 		events <- AgentSwitching(true, a.Name(), step.Agent)
 		r.setCurrentAgent(step.Agent)
@@ -62,6 +72,9 @@ func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, s
 		s := newSubSession(sess, cfg, child)
 
 		result, runErr := r.runSubSessionForwarding(stepCtx, sess, s, stepSpan, events, a.Name())
+
+		// Notify the TUI of pipeline progress: step completed.
+		events <- PipelineProgress(a.Name(), i, len(pipeline), step.Agent, stepAgents, "completed")
 
 		// Restore the pipeline agent as current before emitting switch-back events.
 		r.setCurrentAgent(a.Name())

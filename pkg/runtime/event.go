@@ -532,6 +532,34 @@ func AgentSwitching(switching bool, fromAgent, toAgent string) Event {
 	}
 }
 
+// PipelineProgressEvent is sent when a pipeline step starts or completes.
+// The TUI sidebar uses this to render a step-by-step progress indicator.
+type PipelineProgressEvent struct {
+	AgentContext
+
+	Type          string   `json:"type"`
+	PipelineAgent string   `json:"pipeline_agent"` // name of the pipeline orchestrator agent
+	StepIndex     int      `json:"step_index"`     // 0-based index of the current step
+	TotalSteps    int      `json:"total_steps"`    // total number of steps in the pipeline
+	StepAgent     string   `json:"step_agent"`     // agent name for this step
+	StepAgents    []string `json:"step_agents"`    // all step agent names (for initial render)
+	Status        string   `json:"status"`         // "started" or "completed"
+}
+
+// PipelineProgress creates a new PipelineProgressEvent.
+func PipelineProgress(pipelineAgent string, stepIndex, totalSteps int, stepAgent string, stepAgents []string, status string) Event {
+	return &PipelineProgressEvent{
+		Type:          "pipeline_progress",
+		PipelineAgent: pipelineAgent,
+		StepIndex:     stepIndex,
+		TotalSteps:    totalSteps,
+		StepAgent:     stepAgent,
+		StepAgents:    stepAgents,
+		Status:        status,
+		AgentContext:  newAgentContext(pipelineAgent),
+	}
+}
+
 // ToolsetInfoEvent is sent when toolset information is available
 // When Loading is true, more tools may still be loading (e.g., MCP servers starting)
 type ToolsetInfoEvent struct {
