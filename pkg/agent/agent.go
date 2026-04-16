@@ -153,9 +153,12 @@ func (a *Agent) Model() provider.Provider {
 	if overrides := a.modelOverrides.Load(); overrides != nil && len(*overrides) > 0 {
 		selected = (*overrides)[rand.Intn(len(*overrides))]
 		poolSize = len(*overrides)
-	} else {
+	} else if len(a.models) > 0 {
 		selected = a.models[rand.Intn(len(a.models))]
 		poolSize = len(a.models)
+	} else {
+		// Pipeline agents (and other modelless agents) have no models configured.
+		return nil
 	}
 	slog.Info("Model selected", "agent", a.name, "model", selected.ID(), "pool_size", poolSize)
 	return selected
