@@ -704,10 +704,13 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		m.streamCancelled = false
 		m.workingAgent = msg.AgentName
 		m.currentSessionID = msg.SessionID
-		// Reset pipeline state for the new stream.
-		m.pipelineActive = false
-		m.pipelineStepAgents = nil
-		m.pipelineCompleted = nil
+		// Only reset pipeline state when no pipeline is actively running.
+		// During an active pipeline, each step's sub-session emits its own
+		// StreamStarted event which must not wipe the progress indicator.
+		if !m.pipelineActive {
+			m.pipelineStepAgents = nil
+			m.pipelineCompleted = nil
+		}
 		// If title hasn't been generated yet, show the title generation spinner
 		if !m.titleGenerated {
 			m.titleRegenerating = true
