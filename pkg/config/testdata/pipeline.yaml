@@ -1,0 +1,32 @@
+version: "8"
+agents:
+  # Deterministic pipeline agent: mixes a tool step and two agent steps,
+  # exercises every PipelineStep field (Agent, Task, Tool, Args) and both
+  # {{input}} / {{output}} template variables.
+  pipe:
+    description: Deterministic pipeline fixture
+    instruction: Runs a fixed sequence of steps.
+    toolsets:
+      - type: memory
+        path: pipe_memory.db
+    pipeline:
+      # Tool step — Args with template substitution in a string value.
+      - tool: search_memories
+        args:
+          query: "{{input}}"
+          limit: 5
+      # Agent step — Task with both {{input}} and {{output}} templates.
+      - agent: writer
+        task: "Using memory hits:\n\n{{output}}\n\nWrite about: {{input}}"
+      # Agent step with no task — previous step's output is forwarded verbatim.
+      - agent: editor
+
+  writer:
+    model: openai/gpt-4o-mini
+    description: Writer agent
+    instruction: Write a short article.
+
+  editor:
+    model: openai/gpt-4o-mini
+    description: Editor agent
+    instruction: Polish the draft.
