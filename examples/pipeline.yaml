@@ -7,10 +7,15 @@
 # The pipeline starts by recalling relevant memories, then researches,
 # writes, and edits — all in a guaranteed, deterministic order.
 
+models:
+  gpt:
+    provider: openai
+    model: gpt-4o-mini
+
 agents:
   # ── Orchestrator ─────────────────────────────────────────────────────────────
   root:
-    model: anthropic/claude-sonnet-4-5
+    model: gpt
     description: Content orchestration assistant
     sub_agents:
       - content_pipeline
@@ -47,7 +52,7 @@ agents:
 
   # ── Worker agents ─────────────────────────────────────────────────────────────
   researcher:
-    model: anthropic/claude-sonnet-4-5
+    model: gpt
     description: Research specialist
     toolsets:
       - type: fetch
@@ -57,7 +62,7 @@ agents:
       knowledge. Produce a structured summary with clear sections.
 
   writer:
-    model: anthropic/claude-sonnet-4-5
+    model: gpt
     description: Professional content writer
     instruction: |
       You are a professional content writer. Transform research notes into a
@@ -65,7 +70,7 @@ agents:
       an accessible tone. Target length: 400–600 words.
 
   editor:
-    model: openai/gpt-4o-mini
+    model: gpt
     description: Copy editor
     instruction: |
       You are a meticulous copy editor. Polish the draft for clarity, flow,
