@@ -283,7 +283,17 @@
                 "description": "Arguments passed to the tool (tool steps only). String values support {{input}} and {{output}} template variables.",
                 "additionalProperties": true
               }
-            }
+            },
+            "oneOf": [
+              {
+                "required": ["agent"],
+                "not": { "anyOf": [{ "required": ["tool"] }, { "required": ["args"] }] }
+              },
+              {
+                "required": ["tool"],
+                "not": { "anyOf": [{ "required": ["agent"] }, { "required": ["task"] }] }
+              }
+            ]
           }
         },
         "add_date": {
