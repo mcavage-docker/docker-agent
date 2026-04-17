@@ -692,11 +692,12 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 			m.titleRegenerating = false
 			m.stopSpinner()
 		}
-		// Only update title and mark as generated if a non-empty title was provided
 		if msg.Title != "" {
 			m.sessionTitle = msg.Title
-			m.titleGenerated = true
 		}
+		// Mark as generated even for empty titles so subsequent StreamStarted
+		// events (e.g. pipeline sub-sessions) don't re-trigger the spinner.
+		m.titleGenerated = true
 		m.invalidateCache()
 		return m, nil
 	case *runtime.StreamStartedEvent:

@@ -169,8 +169,12 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			agent.WithHooks(config.MergeHooks(agentConfig.Hooks, cliHooks)),
 		}
 
-		// Pipeline agents are pure sequencers and do not require a model.
-		if len(agentConfig.Pipeline) == 0 {
+		// Pipeline agents are pure sequencers and do not require a model for execution,
+		// but a model may still be configured (e.g. for session title generation).
+		if len(agentConfig.Pipeline) > 0 {
+			opts = append(opts, agent.WithPipeline(agentConfig.Pipeline))
+		}
+		if len(agentConfig.Pipeline) == 0 || agentConfig.Model != "" {
 			models, err := getModelsForAgent(ctx, cfg, &agentConfig, autoModel, runConfig)
 			if err != nil {
 				// Return auto model fallback errors and DMR not installed errors directly
@@ -199,8 +203,6 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 					agent.WithFallbackCooldown(agentConfig.GetFallbackCooldown()),
 				)
 			}
-		} else {
-			opts = append(opts, agent.WithPipeline(agentConfig.Pipeline))
 		}
 
 		agentTools, warnings := getToolsForAgent(ctx, &agentConfig, parentDir, runConfig, loadOpts.toolsetRegistry, configName)

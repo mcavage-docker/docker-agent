@@ -280,8 +280,10 @@ func (a *App) EmitStartupInfo(ctx context.Context, events chan runtime.Event) {
 func (a *App) Run(ctx context.Context, cancel context.CancelFunc, message string, attachments []messages.Attachment) {
 	a.cancel = cancel
 
-	// If this is the first message and no title exists, start local title generation
-	if a.session.Title == "" && a.titleGen != nil {
+	// If this is the first message and no title exists, start local title generation.
+	// generateTitle handles the nil-titleGen case by emitting an empty SessionTitleEvent,
+	// which clears the TUI spinner even when no generator is configured.
+	if a.session.Title == "" {
 		a.titleGenerating.Store(true)
 		go a.generateTitle(ctx, []string{message})
 	}
@@ -458,8 +460,9 @@ func (a *App) processInlineAttachment(att messages.Attachment, textBuilder *stri
 func (a *App) RunWithMessage(ctx context.Context, cancel context.CancelFunc, msg *session.Message) {
 	a.cancel = cancel
 
-	// If this is the first message and no title exists, start local title generation
-	if a.session.Title == "" && a.titleGen != nil {
+	// If this is the first message and no title exists, start local title generation.
+	// generateTitle handles the nil-titleGen case by emitting an empty SessionTitleEvent.
+	if a.session.Title == "" {
 		a.titleGenerating.Store(true)
 		// Extract text content from the message for title generation
 		userMessage := msg.Message.Content
