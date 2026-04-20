@@ -7,8 +7,13 @@
 #            variable that later steps can navigate with dotted paths.
 #   - `when:` gates each branch on a CEL expression over those variables.
 #
-# A single classifier call decides which one of four specialists runs.
+# A single classifier call decides which one of three specialists runs.
 # The runtime — not an LLM — enforces "exactly one branch fires per turn".
+#
+# This example uses the pipeline agent AS the entry point (no LLM
+# coordinator). The user's message flows straight into the classifier
+# without paraphrasing, which matters because the classifier makes its
+# decision from the user's exact words.
 #
 # Try:
 #   docker agent run examples/pipeline-routing.yaml
@@ -28,25 +33,15 @@ models:
     model: gpt-4o-mini
 
 agents:
-  # ── Orchestrator ─────────────────────────────────────────────────────────────
-  # The user chats with root; root dispatches to the deterministic triage
-  # pipeline. We keep root as a thin router so the TUI experience is
-  # conversational — the pipeline itself is a pure sequencer.
-  root:
-    model: worker
-    description: Support ticket router
-    sub_agents: [triage]
-    instruction: |
-      When the user describes an issue, transfer_task to agent="triage"
-      and forward the user's message verbatim. Do not attempt to
-      classify or answer the question yourself.
-
-  # ── Deterministic triage pipeline ────────────────────────────────────────────
+  # ── Deterministic triage pipeline (entry point) ──────────────────────────────
   # No model — this agent is a pure sequencer. The runtime walks the steps
   # below in declared order. `when:` decides which branch fires.
-  triage:
-    description: Classify → route to specialist
-    instruction: Runs a deterministic support-ticket triage pipeline.
+  #
+  # Because `triage` is the entry agent, {{input}} inside the pipeline is
+  # the user's raw message with no intermediate paraphrasing.
+  root:
+    description: Support ticket classifier and router
+    instruction: Classifies and routes support tickets deterministically.
     pipeline:
       # Step 0 — classifier returns JSON matching its declared schema.
       # Because `structured_output:` is declared, `as:` captures the
@@ -54,52 +49,59 @@ agents:
       # navigate it with dotted paths: `ticket.category`.
       - agent: classifier
         as: ticket
-        task: "Classify this support ticket:\n\n{{input}}"
+        task: "{{input}}"
 
-      # One of the next four steps fires. CEL variables are bare
+      # One of the next three steps fires. CEL variables are bare
       # (no {{ }} braces). The runtime evaluates these before running
       # each step and emits a `skipped` progress event for the false
       # branches.
       - agent: billing
         when: "ticket.category == 'billing'"
-        task: "Handle this billing or refund request:\n\n{{input}}"
+        task: "{{input}}"
 
       - agent: engineer
         when: "ticket.category == 'technical'"
-        task: "Diagnose this technical issue:\n\n{{input}}"
+        task: "{{input}}"
 
       - agent: sales
         when: "ticket.category == 'sales'"
-        task: "Answer this sales question:\n\n{{input}}"
-
-      # Fallback for anything the classifier labelled "other" (or any
-      # future category we haven't specialised yet).
-      - agent: fallback
-        when: "!(ticket.category in ['billing', 'technical', 'sales'])"
-        task: "Respond helpfully to this unclassified message:\n\n{{input}}"
+        task: "{{input}}"
 
   # ── Classifier ───────────────────────────────────────────────────────────────
   # Strict structured output — OpenAI enforces the enum at decode time,
-  # so `ticket.category` can only ever be one of the four listed values.
+  # so `ticket.category` can only ever be one of the three listed values.
   # This is what makes the `when:` predicates safe.
   classifier:
     model: classifier
     description: Support ticket intent classifier
     instruction: |
-      You classify a user's support message into EXACTLY ONE category.
-      Be decisive — do not hedge. Use "other" only for messages that
-      are clearly not a support request (greetings, spam, off-topic).
+      You classify a user's support message into EXACTLY ONE of three
+      categories: billing, technical, or sales. Be decisive even when
+      the message is short or contains typos — pick the best match.
 
       Category definitions:
         - billing    → refunds, duplicate charges, invoices, subscriptions,
-                       payment failures, disputed amounts. If the user
-                       mentions money, cards, or billing cycles → billing.
-        - technical  → bugs, crashes, errors, broken integrations,
-                       "it's not working", performance problems.
+                       payment failures, disputed amounts. Any mention of
+                       money, cards, or billing cycles → billing.
+        - technical  → bugs, crashes, errors, broken integrations, things
+                       "not working", performance problems, product
+                       malfunctions. Any mention of a defect or failure
+                       in the product → technical.
         - sales      → pricing, plan comparisons, feature availability,
-                       enterprise / team options, free trials.
-        - other      → greetings, unrelated chat, or messages with no
-                       recognisable support intent at all. Rare.
+                       enterprise / team options, trials. Pre-purchase
+                       questions → sales.
+
+      Examples (the classifier must match these):
+        "I was charged twice last month"     → billing / high
+        "card got declined"                  → billing / normal
+        "the app keeps crashing"             → technical / high
+        "i have bugs" / "i have bugd"        → technical / normal
+        "my product is not working"          → technical / high
+        "product malfunction"                → technical / high
+        "export button does nothing"         → technical / normal
+        "slow performance on large files"    → technical / normal
+        "what plans do you offer?"           → sales / normal
+        "is SSO included in the team plan?"  → sales / low
 
       Urgency cues:
         - high   → "urgent", "down", "broken for everyone", "charged wrong"
@@ -115,7 +117,7 @@ agents:
         properties:
           category:
             type: string
-            enum: [billing, technical, sales, other]
+            enum: [billing, technical, sales]
           urgency:
             type: string
             enum: [low, normal, high]
@@ -144,11 +146,3 @@ agents:
     instruction: |
       You answer pricing, plans, and feature questions. Do not quote
       numbers you don't have — suggest escalating to a human instead.
-
-  fallback:
-    model: worker
-    description: General-purpose responder
-    instruction: |
-      Respond helpfully to messages that don't fit a clear category.
-      Keep it short; ask the user for specifics if you can't help
-      meaningfully.
