@@ -180,3 +180,13 @@ func WithPipeline(steps []latest.PipelineStep) Opt {
 		a.pipeline = steps
 	}
 }
+
+// WithStructuredOutput marks the agent as producing structured (JSON) output.
+// The runtime consults this flag when capturing an agent step's output via
+// `as:` in a pipeline — only structured-output agents have their output
+// JSON-parsed before being bound.
+func WithStructuredOutput(has bool) Opt {
+	return func(a *Agent) {
+		a.hasStructuredOutput = has
+	}
+}

@@ -272,7 +272,7 @@
               },
               "task": {
                 "type": "string",
-                "description": "Task description passed to the agent (agent steps only). Supports {{input}} (original user input) and {{output}} (previous step's output). If omitted, the previous step's output is forwarded verbatim."
+                "description": "Task description passed to the agent (agent steps only). Supports {{input}} (original user input), {{output}} (previous executed step's output), and {{<name>}} for any `as:` binding declared earlier in the pipeline. If omitted, the previous step's output is forwarded verbatim."
               },
               "tool": {
                 "type": "string",
@@ -280,8 +280,17 @@
               },
               "args": {
                 "type": "object",
-                "description": "Arguments passed to the tool (tool steps only). String values support {{input}} and {{output}} template variables.",
+                "description": "Arguments passed to the tool (tool steps only). String values support {{input}}, {{output}}, and {{<name>}} template variables.",
                 "additionalProperties": true
+              },
+              "as": {
+                "type": "string",
+                "description": "Capture this step's output under the given name so later steps can reference it via `{{name}}` in templates or `name` in a `when:` expression. Must be a valid identifier and unique within the pipeline. JSON outputs (from agents with structured_output: or tools returning valid JSON) are captured as typed values; other outputs are captured as strings.",
+                "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+              },
+              "when": {
+                "type": "string",
+                "description": "CEL expression evaluated before the step runs. If it evaluates to false, the step is skipped. Variables available: `input`, `output`, and every `as:` binding from earlier steps. See https://github.com/google/cel-spec for the language reference."
               }
             },
             "oneOf": [

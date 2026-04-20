@@ -41,33 +41,61 @@ func TestPipelineRoundTrip(t *testing.T) {
 	rtPipe, ok := roundTripped.Agents.Lookup("pipe")
 	require.True(t, ok)
 
+	// DeepEqual on the raw slices would compare whenProgram pointers, which are
+	// freshly compiled per parse. Compare the serialisable public fields.
+	before := stripRuntime(pipe.Pipeline)
+	after := stripRuntime(rtPipe.Pipeline)
 	assert.True(t,
-		reflect.DeepEqual(pipe.Pipeline, rtPipe.Pipeline),
+		reflect.DeepEqual(before, after),
 		"pipeline should round-trip unchanged\nbefore: %#v\nafter:  %#v",
-		pipe.Pipeline, rtPipe.Pipeline,
+		before, after,
 	)
+}
+
+// stripRuntime returns a copy of steps with runtime-only fields (whenProgram)
+// zeroed, so round-trip comparisons aren't confused by per-parse pointers.
+func stripRuntime(steps []latest.PipelineStep) []latest.PipelineStep {
+	out := make([]latest.PipelineStep, len(steps))
+	for i, s := range steps {
+		out[i] = latest.PipelineStep{
+			Agent: s.Agent,
+			Task:  s.Task,
+			Tool:  s.Tool,
+			Args:  s.Args,
+			As:    s.As,
+			When:  s.When,
+		}
+	}
+	return out
 }
 
 func assertFixtureSteps(t *testing.T, steps []latest.PipelineStep) {
 	t.Helper()
 
-	// Step 0: tool step with templated string arg and a numeric arg.
+	// Step 0: tool step with templated string arg, numeric arg, and `as:`.
 	assert.Empty(t, steps[0].Agent, "step 0 must be a tool step")
 	assert.Equal(t, "search_memories", steps[0].Tool)
 	assert.Empty(t, steps[0].Task, "tool step must not carry task")
 	assert.Equal(t, "{{input}}", steps[0].Args["query"])
 	assert.EqualValues(t, 5, steps[0].Args["limit"])
+	assert.Equal(t, "memories", steps[0].As)
+	assert.Empty(t, steps[0].When)
 
-	// Step 1: agent step with task referencing both template variables.
+	// Step 1: agent step with task, `as:`, and `when:` referencing the
+	// previous step's binding.
 	assert.Equal(t, "writer", steps[1].Agent)
 	assert.Empty(t, steps[1].Tool, "agent step must not carry tool")
 	assert.Empty(t, steps[1].Args, "agent step must not carry args")
 	assert.Contains(t, steps[1].Task, "{{input}}")
 	assert.Contains(t, steps[1].Task, "{{output}}")
+	assert.Equal(t, "draft", steps[1].As)
+	assert.Equal(t, "size(memories) >= 0", steps[1].When)
 
-	// Step 2: agent step with no task — previous output is forwarded verbatim.
+	// Step 2: agent step with no task, a `when:` on `input`.
 	assert.Equal(t, "editor", steps[2].Agent)
 	assert.Empty(t, steps[2].Task, "step 2 should have no task")
 	assert.Empty(t, steps[2].Tool)
 	assert.Empty(t, steps[2].Args)
+	assert.Empty(t, steps[2].As)
+	assert.Equal(t, "input != ''", steps[2].When)
 }

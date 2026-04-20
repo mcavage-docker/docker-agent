@@ -3,7 +3,13 @@ package latest
 import (
 	"errors"
 	"fmt"
+	"regexp"
+
+	"github.com/docker/docker-agent/pkg/expr"
 )
+
+// asIdentifier matches valid `as:` names — standard identifier regex.
+var asIdentifier = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 func (t *Config) UnmarshalYAML(unmarshal func(any) error) error {
 	type alias Config
@@ -61,7 +67,9 @@ func (a *AgentConfig) validateFallback() error {
 	return nil
 }
 
-// validatePipeline validates the pipeline configuration for an agent.
+// validatePipeline validates the pipeline configuration for an agent. It also
+// compiles every `when:` CEL expression and memoises the program on the step
+// so the runtime can evaluate without re-parsing.
 func (a *AgentConfig) validatePipeline() error {
 	if len(a.Pipeline) == 0 {
 		return nil
@@ -72,7 +80,14 @@ func (a *AgentConfig) validatePipeline() error {
 	if len(a.Handoffs) > 0 {
 		return fmt.Errorf("agent %q: pipeline and handoffs are mutually exclusive", a.Name)
 	}
-	for i, step := range a.Pipeline {
+
+	// Names available to a CEL expression at step i: input, output, and every
+	// `as:` binding declared in steps 0..i-1.
+	availableNames := []string{"input", "output"}
+	seenAs := make(map[string]int, len(a.Pipeline))
+
+	for i := range a.Pipeline {
+		step := &a.Pipeline[i]
 		hasAgent := step.Agent != ""
 		hasTool := step.Tool != ""
 		if !hasAgent && !hasTool {
@@ -86,6 +101,35 @@ func (a *AgentConfig) validatePipeline() error {
 		}
 		if hasAgent && len(step.Args) > 0 {
 			return fmt.Errorf("agent %q: pipeline[%d]: args is not valid for agent steps (use task)", a.Name, i)
+		}
+
+		if step.As != "" {
+			if !asIdentifier.MatchString(step.As) {
+				return fmt.Errorf("agent %q: pipeline[%d]: as %q is not a valid identifier (expected [a-zA-Z_][a-zA-Z0-9_]*)", a.Name, i, step.As)
+			}
+			if step.As == "input" || step.As == "output" {
+				return fmt.Errorf("agent %q: pipeline[%d]: as %q shadows a built-in variable", a.Name, i, step.As)
+			}
+			if prev, exists := seenAs[step.As]; exists {
+				return fmt.Errorf("agent %q: pipeline[%d]: as %q already used at pipeline[%d]", a.Name, i, step.As, prev)
+			}
+		}
+
+		if step.When != "" {
+			env, err := expr.NewEnv(availableNames)
+			if err != nil {
+				return fmt.Errorf("agent %q: pipeline[%d]: preparing CEL environment: %w", a.Name, i, err)
+			}
+			prog, err := env.Compile(step.When)
+			if err != nil {
+				return fmt.Errorf("agent %q: pipeline[%d]: %w", a.Name, i, err)
+			}
+			step.whenProgram = prog
+		}
+
+		if step.As != "" {
+			seenAs[step.As] = i
+			availableNames = append(availableNames, step.As)
 		}
 	}
 	return nil

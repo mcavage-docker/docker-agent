@@ -353,6 +353,161 @@ agents:
 `,
 			wantErr: `agent "pipe": pipeline[0]: args is not valid for agent steps (use task)`,
 		},
+		{
+			name: "as: invalid identifier",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        as: "123-bad"
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `as "123-bad" is not a valid identifier`,
+		},
+		{
+			name: "as: reuses a name",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        as: result
+      - agent: writer
+        as: result
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `as "result" already used at pipeline[0]`,
+		},
+		{
+			name: "as: shadows a built-in",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        as: output
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `shadows a built-in variable`,
+		},
+		{
+			name: "when: syntax error",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        when: "input =="
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `compiling CEL expression`,
+		},
+		{
+			name: "when: references undeclared variable",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        when: "classification.intent == 'refund'"
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `classification`,
+		},
+		{
+			name: "when: forward reference to later as:",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        when: "later == 'x'"
+      - agent: writer
+        as: later
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `later`,
+		},
+		{
+			name: "when: does not return bool",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        when: "'hello'"
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `must return bool`,
+		},
+		{
+			name: "valid as: + when: + dotted CEL path",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: classifier
+        as: classification
+      - agent: billing
+        when: "classification.intent == 'refund'"
+        task: "Handle refund for {{input}}"
+  classifier:
+    model: openai/gpt-4o-mini
+    description: classifier
+    instruction: noop
+  billing:
+    model: openai/gpt-4o-mini
+    description: billing
+    instruction: noop
+`,
+			wantErr: "",
+		},
 	}
 
 	for _, tt := range tests {

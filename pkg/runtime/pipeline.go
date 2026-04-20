@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,9 +20,15 @@ import (
 
 // runPipeline executes the deterministic pipeline configured on the current agent.
 // Steps are executed sequentially by the runtime; no LLM is involved in routing.
-// The output of each step is passed as {{output}} to the next step's task template.
-// runPipeline is called from within the RunStream goroutine, so StreamStarted and
-// StreamStopped events are handled by the outer RunStream envelope.
+//
+// Variables available to each step:
+//   - input  — the original user input (constant across the pipeline)
+//   - output — the output of the last *executed* step (falls through to input
+//              if every preceding step was skipped)
+//   - <name> — any `as:`-bound value declared by an earlier step
+//
+// `when:` expressions evaluate in CEL against these variables; false-returning
+// expressions cause the step to be skipped.
 func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, span trace.Span, events chan Event) {
 	a := r.CurrentAgent()
 	pipeline := a.Pipeline()
@@ -28,9 +36,15 @@ func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, s
 	// Build the ordered list of step labels for the TUI sidebar.
 	stepLabels := pipelineStepLabels(pipeline)
 
-	// Capture the original user input; it is available as {{input}} in every task template.
 	input := sess.GetLastUserMessageContent()
 	output := input
+
+	// vars is the shared name table for templates and CEL. `input` is constant;
+	// `output` is rebound after each executed step.
+	vars := map[string]any{
+		"input":  input,
+		"output": output,
+	}
 
 	for i, step := range pipeline {
 		if ctx.Err() != nil {
@@ -47,16 +61,52 @@ func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, s
 			),
 		)
 
+		// Evaluate `when:` before doing anything else — a skipped step should
+		// produce exactly one "skipped" progress event and advance immediately.
+		if step.WhenProgram() != nil {
+			run, err := step.WhenProgram().EvalBool(vars)
+			if err != nil {
+				msg := fmt.Sprintf("pipeline step %d: %v", i+1, err)
+				events <- Error(msg)
+				stepSpan.SetAttributes(attribute.String("when.error", err.Error()))
+				stepSpan.End()
+				return
+			}
+			stepSpan.SetAttributes(
+				attribute.String("when.expr", step.When),
+				attribute.Bool("when.result", run),
+			)
+			if !run {
+				slog.Info("pipeline step skipped",
+					"pipeline_agent", a.Name(),
+					"step_index", i,
+					"label", label,
+					"when", step.When,
+				)
+				events <- PipelineProgress(a.Name(), i, len(pipeline), label, stepLabels, "skipped")
+				stepSpan.End()
+				continue
+			}
+		}
+
 		// Notify the TUI of pipeline progress: step started.
 		events <- PipelineProgress(a.Name(), i, len(pipeline), label, stepLabels, "started")
 
-		var stepOutput string
-		var stepErr error
+		var (
+			stepOutput  string
+			stepErr     error
+			parseAsJSON bool
+		)
 
 		if step.Tool != "" {
-			stepOutput, stepErr = r.runPipelineToolStep(stepCtx, sess, step, i, input, output, events)
+			stepOutput, stepErr = r.runPipelineToolStep(stepCtx, sess, step, i, vars, events)
+			// Tool outputs: best-effort JSON parse (A+ rule, tool half).
+			parseAsJSON = true
 		} else {
-			stepOutput, stepErr = r.runPipelineAgentStep(stepCtx, sess, a, step, i, input, output, stepSpan, events)
+			var childHasStructuredOutput bool
+			stepOutput, childHasStructuredOutput, stepErr = r.runPipelineAgentStep(stepCtx, sess, a, step, i, vars, stepSpan, events)
+			// Agent outputs: parse only if the child agent declared `structured_output:`.
+			parseAsJSON = childHasStructuredOutput
 		}
 
 		// Notify the TUI of pipeline progress: step completed.
@@ -68,7 +118,14 @@ func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, s
 			return
 		}
 
+		// Rebind `output` for the next step.
 		output = stepOutput
+		vars["output"] = output
+
+		// Capture the output under `as:` (if declared) using the A+ parsing rule.
+		if step.As != "" {
+			vars[step.As] = normalizeOutput(stepOutput, parseAsJSON)
+		}
 	}
 
 	// The last step's output has already been displayed by the forwarded sub-session
@@ -77,24 +134,43 @@ func (r *LocalRuntime) runPipeline(ctx context.Context, sess *session.Session, s
 	span.SetAttributes(attribute.String("pipeline.final_output", output))
 }
 
+// normalizeOutput applies the A+ JSON-parsing rule: JSON-decode the step output
+// if the caller says we should, keep it as a string otherwise. On decode
+// failure we also fall back to string — tools returning plain text are
+// first-class citizens.
+func normalizeOutput(raw string, tryJSON bool) any {
+	if !tryJSON {
+		return raw
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		return raw
+	}
+	return parsed
+}
+
 // runPipelineAgentStep executes a single agent step in the pipeline as a sub-session.
+//
+// Returns the step's output string, a flag indicating whether the child agent
+// declared structured output (the caller uses this for A+ JSON parsing), and
+// any execution error.
 func (r *LocalRuntime) runPipelineAgentStep(
 	ctx context.Context, sess *session.Session,
 	pipelineAgent *agent.Agent,
 	step latest.PipelineStep, index int,
-	input, output string,
+	vars map[string]any,
 	span trace.Span,
 	events chan Event,
-) (string, error) {
-	task := renderPipelineTemplate(step.Task, input, output)
+) (string, bool, error) {
+	task := renderPipelineTemplate(step.Task, vars)
 	if task == "" {
-		task = output
+		task = asString(vars["output"])
 	}
 
 	child, err := r.team.Agent(step.Agent)
 	if err != nil {
 		events <- Error(fmt.Sprintf("pipeline step %d (%q): agent not found: %v", index+1, step.Agent, err))
-		return "", fmt.Errorf("agent not found: %w", err)
+		return "", false, fmt.Errorf("agent not found: %w", err)
 	}
 
 	events <- AgentSwitching(true, pipelineAgent.Name(), step.Agent)
@@ -116,10 +192,10 @@ func (r *LocalRuntime) runPipelineAgentStep(
 	events <- AgentInfo(pipelineAgent.Name(), "", pipelineAgent.Description(), pipelineAgent.WelcomeMessage())
 
 	if runErr != nil {
-		return "", runErr
+		return "", false, runErr
 	}
 
-	return result.Output, nil
+	return result.Output, child.HasStructuredOutput(), nil
 }
 
 // runPipelineToolStep executes a single tool step in the pipeline by calling
@@ -127,7 +203,7 @@ func (r *LocalRuntime) runPipelineAgentStep(
 func (r *LocalRuntime) runPipelineToolStep(
 	ctx context.Context, _ *session.Session,
 	step latest.PipelineStep, index int,
-	input, output string,
+	vars map[string]any,
 	events chan Event,
 ) (string, error) {
 	a := r.CurrentAgent()
@@ -155,7 +231,7 @@ func (r *LocalRuntime) runPipelineToolStep(
 	}
 
 	// Render template variables in args, then marshal to JSON.
-	renderedArgs := renderPipelineArgs(step.Args, input, output)
+	renderedArgs := renderPipelineArgs(step.Args, vars)
 	argsJSON, err := json.Marshal(renderedArgs)
 	if err != nil {
 		msg := fmt.Sprintf("pipeline step %d: failed to marshal args for tool %q: %v", index+1, step.Tool, err)
@@ -207,33 +283,90 @@ func pipelineStepLabels(steps []latest.PipelineStep) []string {
 	return labels
 }
 
-// renderPipelineTemplate replaces {{input}} and {{output}} in a task template string.
-// If the template is empty the empty string is returned (caller should fall back to
-// passing the previous step's output verbatim).
-func renderPipelineTemplate(tmpl, input, output string) string {
+// templateVarPattern matches `{{name}}` and `{{name.path.with.dots}}`. Names
+// and path segments must be standard identifiers.
+var templateVarPattern = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\}\}`)
+
+// renderPipelineTemplate resolves `{{name}}` and `{{name.path}}` references in
+// a task/args template string against the vars map. Non-string terminal values
+// are rendered as JSON. Unknown names or invalid paths are left as-is (the
+// original `{{...}}` literal) so failures are visible in the rendered output
+// rather than silently swallowed.
+//
+// Returns the empty string for an empty template (caller falls back to passing
+// the previous step's output verbatim).
+func renderPipelineTemplate(tmpl string, vars map[string]any) string {
 	if tmpl == "" {
 		return ""
 	}
-	return strings.NewReplacer(
-		"{{input}}", input,
-		"{{output}}", output,
-	).Replace(tmpl)
+	return templateVarPattern.ReplaceAllStringFunc(tmpl, func(match string) string {
+		groups := templateVarPattern.FindStringSubmatch(match)
+		if len(groups) < 2 {
+			return match
+		}
+		path := strings.Split(groups[1], ".")
+		val, ok := lookupVar(vars, path)
+		if !ok {
+			return match
+		}
+		return asString(val)
+	})
 }
 
-// renderPipelineArgs renders {{input}} and {{output}} template variables in
-// tool step arguments. Only string values are rendered; other types are
-// passed through unchanged.
-func renderPipelineArgs(args map[string]any, input, output string) map[string]any {
+// renderPipelineArgs renders template variables in tool step arguments. String
+// values go through the template renderer; non-string values pass through.
+func renderPipelineArgs(args map[string]any, vars map[string]any) map[string]any {
 	if len(args) == 0 {
 		return args
 	}
 	result := make(map[string]any, len(args))
 	for k, v := range args {
 		if s, ok := v.(string); ok {
-			result[k] = renderPipelineTemplate(s, input, output)
+			result[k] = renderPipelineTemplate(s, vars)
 		} else {
 			result[k] = v
 		}
 	}
 	return result
+}
+
+// lookupVar walks a dotted path into a value retrieved from vars. The first
+// segment is a key in vars; subsequent segments navigate into map[string]any
+// values. Returns the resolved value and whether the lookup succeeded.
+func lookupVar(vars map[string]any, path []string) (any, bool) {
+	if len(path) == 0 {
+		return nil, false
+	}
+	cur, ok := vars[path[0]]
+	if !ok {
+		return nil, false
+	}
+	for _, seg := range path[1:] {
+		m, isMap := cur.(map[string]any)
+		if !isMap {
+			return nil, false
+		}
+		cur, ok = m[seg]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// asString renders a value for use inside a string template. Strings pass
+// through; everything else is JSON-encoded (consistent with how CEL-facing
+// structured values would be serialised back to text).
+func asString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("%v", v)
+	}
+	return string(b)
 }

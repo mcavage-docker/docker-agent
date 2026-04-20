@@ -1,8 +1,7 @@
 version: "8"
 agents:
-  # Deterministic pipeline agent: mixes a tool step and two agent steps,
-  # exercises every PipelineStep field (Agent, Task, Tool, Args) and both
-  # {{input}} / {{output}} template variables.
+  # Deterministic pipeline agent covering every PipelineStep field:
+  # Agent, Task, Tool, Args, As, When. Drives the round-trip test.
   pipe:
     description: Deterministic pipeline fixture
     instruction: Runs a fixed sequence of steps.
@@ -10,16 +9,22 @@ agents:
       - type: memory
         path: pipe_memory.db
     pipeline:
-      # Tool step — Args with template substitution in a string value.
+      # Tool step — Args with template substitution, captured via `as:`.
       - tool: search_memories
         args:
           query: "{{input}}"
           limit: 5
-      # Agent step — Task with both {{input}} and {{output}} templates.
+        as: memories
+      # Agent step — Task with both {{input}} and {{output}} templates,
+      # gated by a CEL expression that references an earlier `as:` binding.
       - agent: writer
+        when: "size(memories) >= 0"
         task: "Using memory hits:\n\n{{output}}\n\nWrite about: {{input}}"
-      # Agent step with no task — previous step's output is forwarded verbatim.
+        as: draft
+      # Agent step with no task — previous step's output is forwarded
+      # verbatim. The `when:` here exercises string equality on input.
       - agent: editor
+        when: "input != ''"
 
   writer:
     model: openai/gpt-4o-mini

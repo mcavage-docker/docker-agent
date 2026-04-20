@@ -30,6 +30,7 @@ type Agent struct {
 	handoffs                []*Agent
 	parents                 []*Agent
 	pipeline                []latest.PipelineStep
+	hasStructuredOutput     bool
 	addDate                 bool
 	addEnvironmentInfo      bool
 	addDescriptionParameter bool
@@ -134,6 +135,13 @@ func (a *Agent) HasModel() bool {
 }
 
 // HasPipeline returns true if this agent has a deterministic pipeline defined.
+// HasStructuredOutput reports whether this agent was configured with a
+// `structured_output:` block. Pipelines use this signal to decide whether to
+// JSON-parse the agent's output when capturing it via `as:`.
+func (a *Agent) HasStructuredOutput() bool {
+	return a.hasStructuredOutput
+}
+
 func (a *Agent) HasPipeline() bool {
 	return len(a.pipeline) > 0
 }

@@ -14,6 +14,7 @@ import (
 
 	"github.com/docker/docker-agent/pkg/config/types"
 	"github.com/docker/docker-agent/pkg/effort"
+	"github.com/docker/docker-agent/pkg/expr"
 )
 
 const Version = "8"
@@ -369,16 +370,44 @@ type PipelineStep struct {
 	Agent string `json:"agent,omitempty"`
 	// Task is the task description passed to the agent (agent steps only).
 	// Supports template variables:
-	//   {{input}}  — the original user input to the pipeline
-	//   {{output}} — the output of the previous step (same as {{input}} for the first step)
+	//   {{input}}   — the original user input to the pipeline
+	//   {{output}}  — the output of the previous *executed* step (falls through
+	//                 to {{input}} if no step has executed yet)
+	//   {{<name>}}  — any name bound via `as:` in an earlier step
 	Task string `json:"task,omitempty"`
 	// Tool is the name of a tool to call directly (tool step).
 	// The tool must be available in the pipeline agent's toolsets.
 	// Mutually exclusive with Agent.
 	Tool string `json:"tool,omitempty"`
 	// Args are the arguments passed to the tool (tool steps only).
-	// String values support {{input}} and {{output}} template variables.
+	// String values support {{input}}, {{output}}, and {{<name>}} template vars.
 	Args map[string]any `json:"args,omitempty"`
+	// As captures this step's output under the given name so later steps can
+	// reference it by `{{name}}` in templates or `name` in a `when:` expression.
+	// Must be a valid identifier ([a-zA-Z_][a-zA-Z0-9_]*) and unique within the
+	// pipeline. The captured value is:
+	//   - A parsed JSON value if the step is an agent with `structured_output:`
+	//     declared, or a tool whose output is valid JSON.
+	//   - A raw string otherwise.
+	As string `json:"as,omitempty"`
+	// When is a CEL expression evaluated before the step runs. If it evaluates
+	// to false, the step is skipped (its `as:` binding, if any, is not set).
+	// The expression has access to `input`, `output`, and every name declared
+	// via `as:` in earlier steps.
+	//
+	// See https://github.com/google/cel-spec for language reference.
+	When string `json:"when,omitempty"`
+
+	// whenProgram is the compiled CEL program for `When`, memoised at validate
+	// time. Runtime-only; never serialised. nil when `When` is empty or the
+	// config was constructed outside the validate path.
+	whenProgram *expr.Program `json:"-" yaml:"-"`
+}
+
+// WhenProgram returns the compiled CEL program for this step's `when:` clause,
+// or nil if no `when:` is declared. Populated by validate() at config load.
+func (s *PipelineStep) WhenProgram() *expr.Program {
+	return s.whenProgram
 }
 
 // AgentConfig represents a single agent configuration

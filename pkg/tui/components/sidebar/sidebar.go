@@ -135,6 +135,7 @@ type model struct {
 	pipelineStepAgents []string // ordered list of step agent names
 	pipelineStepIndex  int      // index of the currently running step
 	pipelineCompleted  []bool   // per-step completion flags
+	pipelineSkipped    []bool   // per-step skipped flags (set when a when: clause returns false)
 	availableSkills    int
 	toolsLoading       bool // true when more tools may still be loading
 	sessionState       *service.SessionState
@@ -309,17 +310,27 @@ func (m *model) SetPipelineProgress(pipelineAgent string, stepIndex, totalSteps 
 	m.pipelineStepAgents = stepAgents
 	m.pipelineStepIndex = stepIndex
 
-	// Ensure the completed slice is the right size.
+	// Ensure the completed / skipped slices are the right size.
 	if len(m.pipelineCompleted) != totalSteps {
 		m.pipelineCompleted = make([]bool, totalSteps)
 	}
+	if len(m.pipelineSkipped) != totalSteps {
+		m.pipelineSkipped = make([]bool, totalSteps)
+	}
 
-	if status == "completed" {
+	switch status {
+	case "completed":
 		m.pipelineCompleted[stepIndex] = true
-		// If all steps are done, mark pipeline as inactive.
+	case "skipped":
+		m.pipelineSkipped[stepIndex] = true
+	}
+
+	if status == "completed" || status == "skipped" {
+		// If every step is accounted for (completed or skipped), the pipeline
+		// is done.
 		allDone := true
-		for _, done := range m.pipelineCompleted {
-			if !done {
+		for i := range m.pipelineCompleted {
+			if !m.pipelineCompleted[i] && !m.pipelineSkipped[i] {
 				allDone = false
 				break
 			}
@@ -711,6 +722,7 @@ func (m *model) Update(msg tea.Msg) (layout.Model, tea.Cmd) {
 		if !m.pipelineActive {
 			m.pipelineStepAgents = nil
 			m.pipelineCompleted = nil
+			m.pipelineSkipped = nil
 		}
 		// If title hasn't been generated yet, show the title generation spinner
 		if !m.titleGenerated {
@@ -1313,6 +1325,11 @@ func (m *model) pipelineInfo(contentWidth int) string {
 		var style lipgloss.Style
 
 		switch {
+		case i < len(m.pipelineSkipped) && m.pipelineSkipped[i]:
+			// Skipped steps are dimmed with a dash marker — deliberately
+			// visible so the user sees the branch that did not fire.
+			prefix = "–"
+			style = styles.MutedStyle
 		case i < len(m.pipelineCompleted) && m.pipelineCompleted[i]:
 			prefix = "✓"
 			style = styles.SuccessStyle

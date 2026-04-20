@@ -3,9 +3,11 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/goccy/go-yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -70,7 +72,8 @@ func TestRenderPipelineTemplate(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderPipelineTemplate(tt.tmpl, tt.input, tt.output)
+			vars := map[string]any{"input": tt.input, "output": tt.output}
+			got := renderPipelineTemplate(tt.tmpl, vars)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -123,7 +126,8 @@ func TestRenderPipelineArgs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderPipelineArgs(tt.args, tt.input, tt.output)
+			vars := map[string]any{"input": tt.input, "output": tt.output}
+			got := renderPipelineArgs(tt.args, vars)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -323,4 +327,144 @@ func extractArgsFromResponse(t *testing.T, response string) map[string]any {
 	var args map[string]any
 	require.NoError(t, json.Unmarshal([]byte(response[idx+1:]), &args), "args json: %q", response)
 	return args
+}
+
+// TestRenderPipelineTemplate_NamedAndDotted verifies {{name}} and
+// {{name.path}} resolution against the vars map, with map values JSON-rendered
+// when used in string context and unknown names left as literal.
+func TestRenderPipelineTemplate_NamedAndDotted(t *testing.T) {
+	vars := map[string]any{
+		"input":          "original",
+		"output":         "prev",
+		"intent":         "refund",
+		"classification": map[string]any{"intent": "technical", "confidence": 0.9},
+	}
+
+	tests := []struct {
+		name string
+		tmpl string
+		want string
+	}{
+		{
+			name: "named string var",
+			tmpl: "Intent was {{intent}}.",
+			want: "Intent was refund.",
+		},
+		{
+			name: "dotted path into map",
+			tmpl: "Classified as {{classification.intent}}.",
+			want: "Classified as technical.",
+		},
+		{
+			name: "whole map renders as JSON",
+			tmpl: "Full: {{classification}}",
+			want: `Full: {"confidence":0.9,"intent":"technical"}`,
+		},
+		{
+			name: "unknown name left as literal",
+			tmpl: "Unknown: {{missing}}",
+			want: "Unknown: {{missing}}",
+		},
+		{
+			name: "unknown path segment left as literal",
+			tmpl: "Bad path: {{classification.nope}}",
+			want: "Bad path: {{classification.nope}}",
+		},
+		{
+			name: "input and output still work",
+			tmpl: "In={{input}}, out={{output}}",
+			want: "In=original, out=prev",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderPipelineTemplate(tt.tmpl, vars)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestPipelineExecutionE2E_AsAndWhen exercises `as:` capture + CEL-gated
+// `when:` end to end. Three tool steps: step 0 produces a JSON object,
+// step 1 gates on a field of that object (runs), step 2 gates on a different
+// value of that field (skipped).
+func TestPipelineExecutionE2E_AsAndWhen(t *testing.T) {
+	// Emitter tool whose output is a fixed JSON object — simulates a
+	// structured-output tool (A+ rule: tool outputs try-parse as JSON).
+	emit := tools.Tool{
+		Name:       "emit_classification",
+		Parameters: map[string]any{},
+		Handler: func(_ context.Context, _ tools.ToolCall) (*tools.ToolCallResult, error) {
+			return tools.ResultSuccess(`{"intent":"refund","confidence":0.92}`), nil
+		},
+	}
+	handleRefund := newEchoTool("handle_refund", "REFUND_HANDLED", false)
+	handleTechnical := newEchoTool("handle_technical", "TECH_HANDLED", false)
+
+	// Go through yaml.Unmarshal so validatePipeline compiles the CEL
+	// programs onto the steps (WhenProgram is runtime-only and only populated
+	// by the validator).
+	const yamlSrc = `version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - tool: emit_classification
+        as: classification
+      - tool: handle_refund
+        when: "classification.intent == 'refund'"
+        args:
+          q: "{{input}}"
+      - tool: handle_technical
+        when: "classification.intent == 'technical'"
+        args:
+          q: "{{input}}"
+`
+	var parsed latest.Config
+	require.NoError(t, yaml.Unmarshal([]byte(yamlSrc), &parsed))
+	pipeCfg, ok := parsed.Agents.Lookup("pipe")
+	require.True(t, ok)
+
+	pipe := agent.New("pipe", "pipeline agent",
+		agent.WithToolSets(newStubToolSet(nil, []tools.Tool{emit, handleRefund, handleTechnical}, nil)),
+		agent.WithPipeline(pipeCfg.Pipeline), // now carries compiled WhenPrograms
+	)
+
+	tm := team.New(team.WithAgents(pipe))
+	rt, err := NewLocalRuntime(tm, WithSessionCompaction(false), WithModelStore(mockModelStore{}))
+	require.NoError(t, err)
+
+	sess := session.New(session.WithUserMessage("I want a refund"))
+	sess.Title = "Unit Test"
+
+	events := drainEvents(rt.RunStream(t.Context(), sess))
+
+	progress := filterPipelineProgress(events)
+
+	// Expected: step 0 started+completed; step 1 started+completed; step 2 skipped.
+	var got []string
+	for _, p := range progress {
+		got = append(got, fmt.Sprintf("%d:%s", p.StepIndex, p.Status))
+	}
+	assert.Equal(t, []string{
+		"0:started", "0:completed",
+		"1:started", "1:completed",
+		"2:skipped",
+	}, got)
+
+	// handle_refund ran (echoed args back); handle_technical did not.
+	responses := filterToolCallResponses(events)
+	var sawRefund, sawTechnical bool
+	for _, r := range responses {
+		if strings.HasPrefix(r.Response, "REFUND_HANDLED|") {
+			sawRefund = true
+		}
+		if strings.HasPrefix(r.Response, "TECH_HANDLED|") {
+			sawTechnical = true
+		}
+	}
+	assert.True(t, sawRefund, "expected handle_refund to have run")
+	assert.False(t, sawTechnical, "handle_technical must have been skipped")
 }

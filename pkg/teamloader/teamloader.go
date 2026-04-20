@@ -167,6 +167,7 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 			agent.WithNumHistoryItems(agentConfig.NumHistoryItems),
 			agent.WithCommands(expander.ExpandCommands(ctx, agentConfig.Commands)),
 			agent.WithHooks(config.MergeHooks(agentConfig.Hooks, cliHooks)),
+			agent.WithStructuredOutput(agentConfig.StructuredOutput != nil),
 		}
 
 		// Pipeline agents are pure sequencers and do not require a model for execution,
