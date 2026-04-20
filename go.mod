@@ -36,6 +36,7 @@ require (
 	github.com/go-git/go-git/v5 v5.18.0
 	github.com/goccy/go-yaml v1.19.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
+	github.com/google/cel-go v0.28.0
 	github.com/google/go-containerregistry v0.21.5
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
@@ -75,7 +76,9 @@ require (
 )
 
 require (
+	cel.dev/expr v0.25.1 // indirect
 	github.com/99designs/go-keychain v0.0.0-20191008050251-8e49817e8af4 // indirect
+	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.23 // indirect
 	github.com/danieljoos/wincred v1.2.2 // indirect
 	github.com/dvsekhvalnov/jose2go v1.5.0 // indirect
@@ -85,6 +88,7 @@ require (
 	github.com/mtibben/percent v0.2.1 // indirect
 	github.com/pb33f/jsonpath v0.8.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
+	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
 )
 
 require (
