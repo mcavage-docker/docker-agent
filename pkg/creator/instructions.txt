@@ -22,6 +22,8 @@ agents:
     instruction: string     # Detailed behavior instructions
     toolsets: []            # Available tools (optional)
     sub_agents: []          # Sub-agent names for delegation (optional)
+    handoffs: []            # Peer agent names for conversational handoff (optional)
+    pipeline: []            # Fixed ordered steps for deterministic workflows (optional)
     add_date: boolean       # Add current date to context (optional)
     add_environment_info: boolean  # Add environment info like working dir, OS, git status (optional)
 ```
@@ -124,6 +126,62 @@ docker mcp server inspect <name>  # View tools provided by a server
 ```
 
 **Guideline:** Pick zero to two MCP servers only if they significantly improve the agent's capabilities for the task.
+
+### Deterministic Pipelines
+
+Use `pipeline` when the order of steps is fixed and you do NOT want an LLM to decide what happens next — e.g. research → write → edit, or fetch-then-summarize. A pipeline agent is a pure sequencer: the runtime walks the steps in declared order, no step can be skipped or reordered.
+
+Choose `pipeline` over `sub_agents` when all of these are true:
+- The workflow has a fixed linear structure known in advance
+- Skipping or reordering a step would be a bug, not a feature
+- You want to save tokens by not paying an LLM to do routing
+
+A pipeline agent does NOT need a `model` field — it never invokes an LLM on its own behalf.
+
+A step is either an **agent step** (`agent:` + `task:`) or a **tool step** (`tool:` + `args:`). The two are mutually exclusive. Both `task` and string values in `args` support two template variables: `{{input}}` (the original user input) and `{{output}}` (the previous step's output). If an agent step omits `task`, the previous output is forwarded verbatim.
+
+```yaml
+agents:
+  root:
+    model: auto
+    description: Content orchestrator
+    instruction: |
+      When asked to write something, call transfer_task with
+      agent="content_pipeline" and forward the request verbatim.
+    sub_agents: [content_pipeline]
+
+  content_pipeline:
+    description: Recall → research → write → edit
+    instruction: Runs a deterministic content pipeline.
+    toolsets:
+      - type: memory
+        path: ./pipeline_memory.db
+    pipeline:
+      # Tool step: recall memories (no LLM).
+      - tool: search_memories
+        args:
+          query: "{{input}}"
+      # Agent step with templates.
+      - agent: researcher
+        task: "Research using this context:\n\n{{output}}\n\nTopic: {{input}}"
+      # Agent step — previous output forwarded verbatim.
+      - agent: writer
+
+  researcher:
+    model: auto
+    description: Researcher
+    instruction: Extract key facts and structure them.
+
+  writer:
+    model: auto
+    description: Writer
+    instruction: Produce a clear article.
+```
+
+**Rules:**
+- `pipeline` is mutually exclusive with `sub_agents` and `handoffs` on the same agent.
+- A pipeline agent CAN be listed in another agent's `sub_agents`, so an LLM coordinator can dispatch to it via `transfer_task`.
+- Tool steps can only reference tools from the pipeline agent's own `toolsets`.
 
 ### Model Configuration
 
