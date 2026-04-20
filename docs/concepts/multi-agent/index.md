@@ -19,26 +19,28 @@ Complex tasks benefit from specialization. Instead of one monolithic agent tryin
 
 Each agent has its own model, tools, and instructions — optimized for its specific role.
 
-## Two Patterns: Delegation vs. Handoffs
+## Three Patterns: Delegation, Handoffs, Pipelines
 
-docker-agent supports two multi-agent patterns:
+docker-agent supports three multi-agent patterns:
 
-| | **Delegation** (`sub_agents`) | **Handoffs** (`handoffs`) |
-|---|---|---|
-| **Topology** | Hierarchical (parent → child → parent) | Peer-to-peer graph (A → B → C → A) |
-| **Session** | Child runs in a **sub-session** | Conversation stays in the **same session** |
-| **Context** | Child gets a clean task description | Next agent sees the **full conversation history** |
-| **Control flow** | Parent blocks until child finishes, then continues | Active agent switches — previous agent is no longer in the loop |
-| **Tool** | `transfer_task` | `handoff` |
-| **Best for** | Task delegation to specialists | Pipeline workflows, conversational routing |
+| | **Delegation** (`sub_agents`) | **Handoffs** (`handoffs`) | **Pipeline** (`pipeline`) |
+|---|---|---|---|
+| **Topology** | Hierarchical (parent → child → parent) | Peer-to-peer graph (A → B → C → A) | Fixed linear sequence (step 1 → step 2 → step 3) |
+| **Routing** | LLM chooses which child to call | LLM chooses when to hand off | **Runtime drives execution — no LLM involved in routing** |
+| **Session** | Child runs in a **sub-session** | Conversation stays in the **same session** | Each step runs in its own **sub-session** |
+| **Context** | Child gets a clean task description | Next agent sees the **full conversation history** | Next step sees previous step's output via `{{output}}` |
+| **Control flow** | Parent blocks until child finishes | Active agent switches | Steps execute in declared order — none skipped, none reordered |
+| **Tool** | `transfer_task` | `handoff` | — (no tool; execution is programmatic) |
+| **Best for** | Task delegation to specialists | Conversational routing, agent graphs | Deterministic workflows where order matters |
 
-You can combine both patterns in the same configuration — an agent can have both `sub_agents` and `handoffs`.
+`sub_agents` and `handoffs` can be combined on the same agent. `pipeline` is mutually exclusive with both — a pipeline agent is a pure sequencer.
 
 <div class="callout callout-tip" markdown="1">
 <div class="callout-title">💡 When to use which
 </div>
   <p><strong><code>sub_agents</code></strong> — Use when a coordinator needs to send tasks to specialists and synthesize their results.</p>
-  <p><strong><code>handoffs</code></strong> — Use when agents should take turns processing the same conversation (pipelines, routing).</p>
+  <p><strong><code>handoffs</code></strong> — Use when agents should take turns processing the same conversation (conversational routing, agent graphs).</p>
+  <p><strong><code>pipeline</code></strong> — Use when the order of steps is fixed and you don't want an LLM deciding what happens next. Ideal for research → write → edit flows, ETL-style data processing, or any workflow that must run the same way every time.</p>
   <p><strong><code>background_agents</code></strong> — Use when multiple independent tasks can run simultaneously.</p>
 
 </div>
@@ -144,6 +146,110 @@ agents:
 <div class="callout-title">💡 Full pipeline example
 </div>
   <p>For a more complex handoff graph with branching and multiple processing stages, see <a href="https://github.com/docker/docker-agent/blob/main/examples/handoff.yaml"><code>examples/handoff.yaml</code></a>.</p>
+
+</div>
+
+## Deterministic Pipelines with `pipeline`
+
+Some workflows do not need an LLM to decide what happens next. When you already know the exact sequence of steps — say, *recall memory → research → write → edit* — encoding that sequence in an LLM prompt wastes tokens and introduces non-determinism. The `pipeline` field runs the sequence programmatically instead.
+
+A pipeline agent is a pure sequencer: the runtime walks the `pipeline` list in declared order, no step can be skipped, reordered, or retried by model choice. Each step runs in its own sub-session, and the output of step N is fed into step N+1.
+
+### Step types
+
+A step is either an **agent step** or a **tool step**:
+
+- **Agent step** (`agent:` + `task:`) — runs an LLM agent in a sub-session with the given task.
+- **Tool step** (`tool:` + `args:`) — calls a tool directly with no LLM. The tool must be available in the pipeline agent's own toolsets. Useful for fetching URLs, reading files, running shell commands, or looking up memories — any deterministic operation that doesn't need a model.
+
+The two are mutually exclusive: a step has either `agent` or `tool`, never both.
+
+### Template variables
+
+Both `task` (agent steps) and string values in `args` (tool steps) support two template variables:
+
+- `{{input}}` — the original user input to the pipeline. Available in every step.
+- `{{output}}` — the output of the previous step. For the first step, this equals `{{input}}`.
+
+If an agent step omits `task`, the previous step's output is forwarded to the agent verbatim.
+
+### Example
+
+```yaml
+models:
+  gpt:
+    provider: openai
+    model: gpt-4o-mini
+
+agents:
+  # Pipeline agent — no model, just a sequence of steps.
+  content_pipeline:
+    description: Recall → research → write → edit
+    instruction: Runs a four-step content pipeline.
+    toolsets:
+      - type: memory
+        path: ./pipeline_memory.db
+    pipeline:
+      # Tool step: recall relevant memories (no LLM).
+      - tool: search_memories
+        args:
+          query: "{{input}}"
+
+      # Agent step: research using the recalled context.
+      - agent: researcher
+        task: "Research the topic. Memory context:\n\n{{output}}\n\nTopic: {{input}}"
+
+      # Agent step: write an article from the research.
+      - agent: writer
+        task: "Turn this research into an article:\n\n{{output}}"
+
+      # Agent step with no task — previous output forwarded verbatim.
+      - agent: editor
+
+  researcher:
+    model: gpt
+    description: Research specialist
+    instruction: Extract key facts and structure them.
+
+  writer:
+    model: gpt
+    description: Content writer
+    instruction: Produce a clear, engaging article.
+
+  editor:
+    model: gpt
+    description: Copy editor
+    instruction: Polish for clarity and grammar. Preserve meaning.
+```
+
+### Triggering a pipeline from another agent
+
+A pipeline agent can be listed in another agent's `sub_agents`, which exposes it via `transfer_task`. An LLM coordinator can then dispatch to the pipeline the same way it dispatches to any specialist — but once the pipeline is running, step order is fixed by the runtime, not by the model:
+
+```yaml
+agents:
+  root:
+    model: gpt
+    description: Content orchestrator
+    sub_agents:
+      - content_pipeline
+    instruction: |
+      When the user asks you to write or research something, call
+      transfer_task with agent="content_pipeline" and pass the user's
+      request verbatim as the task.
+```
+
+<div class="callout callout-info" markdown="1">
+<div class="callout-title">ℹ️ Pipeline agents and models
+</div>
+  <p>A pipeline agent does not require a <code>model</code> field — the pipeline itself never invokes an LLM on behalf of the sequencer. You may still set one if you want the pipeline agent to own a model for session-title generation or similar ancillary use.</p>
+
+</div>
+
+<div class="callout callout-tip" markdown="1">
+<div class="callout-title">💡 Full working example
+</div>
+  <p>See <a href="https://github.com/docker/docker-agent/blob/main/examples/pipeline.yaml"><code>examples/pipeline.yaml</code></a> for the complete runnable configuration.</p>
 
 </div>
 
@@ -343,7 +449,7 @@ toolsets:
 - **Give minimal tools** — Only give each agent the tools it needs for its specific role
 - **Use the think tool when needed** — For models without native reasoning, give coordinators the think tool so they reason about delegation. Models with built-in thinking (e.g., via `thinking_budget`) don't need it
 - **Use the right model** — Use capable models for complex reasoning, cheap models for simple tasks
-- **Choose the right pattern** — Use `sub_agents` for hierarchical task delegation, `handoffs` for pipeline workflows and conversational routing
+- **Choose the right pattern** — Use `sub_agents` for hierarchical task delegation, `handoffs` for conversational routing and agent graphs, `pipeline` for deterministic fixed-order workflows
 
 <div class="callout callout-info" markdown="1">
 <div class="callout-title">ℹ️ Beyond docker-agent
