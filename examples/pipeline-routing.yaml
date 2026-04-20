@@ -1,0 +1,135 @@
+#!/usr/bin/env docker agent run
+
+# Intent-Routed Pipeline Example
+#
+# Demonstrates deterministic branching inside a pipeline:
+#   - `as:`  captures a structured-output agent's JSON into a named
+#            variable that later steps can navigate with dotted paths.
+#   - `when:` gates each branch on a CEL expression over those variables.
+#
+# A single classifier call decides which one of four specialists runs.
+# The runtime — not an LLM — enforces "exactly one branch fires per turn".
+#
+# Try:
+#   docker agent run examples/pipeline-routing.yaml
+#   > "I was charged twice last month, please refund the duplicate."
+# → classifier returns {category: refund}, billing specialist answers.
+#
+#   > "The app crashes every time I open the settings page."
+# → classifier returns {category: technical}, engineer answers.
+
+models:
+  classifier:
+    provider: openai
+    model: gpt-4o-mini
+    temperature: 0
+  worker:
+    provider: openai
+    model: gpt-4o-mini
+
+agents:
+  # ── Orchestrator ─────────────────────────────────────────────────────────────
+  # The user chats with root; root dispatches to the deterministic triage
+  # pipeline. We keep root as a thin router so the TUI experience is
+  # conversational — the pipeline itself is a pure sequencer.
+  root:
+    model: worker
+    description: Support ticket router
+    sub_agents: [triage]
+    instruction: |
+      When the user describes an issue, transfer_task to agent="triage"
+      and forward the user's message verbatim. Do not attempt to
+      classify or answer the question yourself.
+
+  # ── Deterministic triage pipeline ────────────────────────────────────────────
+  # No model — this agent is a pure sequencer. The runtime walks the steps
+  # below in declared order. `when:` decides which branch fires.
+  triage:
+    description: Classify → route to specialist
+    instruction: Runs a deterministic support-ticket triage pipeline.
+    pipeline:
+      # Step 0 — classifier returns JSON matching its declared schema.
+      # Because `structured_output:` is declared, `as:` captures the
+      # parsed object (a map), not the raw string. Downstream CEL can
+      # navigate it with dotted paths: `ticket.category`.
+      - agent: classifier
+        as: ticket
+        task: "Classify this support ticket:\n\n{{input}}"
+
+      # One of the next four steps fires. CEL variables are bare
+      # (no {{ }} braces). The runtime evaluates these before running
+      # each step and emits a `skipped` progress event for the false
+      # branches.
+      - agent: billing
+        when: "ticket.category == 'refund'"
+        task: "Handle this refund request:\n\n{{input}}"
+
+      - agent: engineer
+        when: "ticket.category == 'technical'"
+        task: "Diagnose this technical issue:\n\n{{input}}"
+
+      - agent: sales
+        when: "ticket.category == 'sales'"
+        task: "Answer this sales question:\n\n{{input}}"
+
+      # Fallback for anything the classifier labelled "other" (or any
+      # future category we haven't specialised yet).
+      - agent: fallback
+        when: "!(ticket.category in ['refund', 'technical', 'sales'])"
+        task: "Respond helpfully to this unclassified message:\n\n{{input}}"
+
+  # ── Classifier ───────────────────────────────────────────────────────────────
+  # Strict structured output — OpenAI enforces the enum at decode time,
+  # so `ticket.category` can only ever be one of the four listed values.
+  # This is what makes the `when:` predicates safe.
+  classifier:
+    model: classifier
+    description: Support ticket intent classifier
+    instruction: |
+      Classify the user's support ticket. Read carefully and pick
+      exactly one category.
+    structured_output:
+      name: ticket_classification
+      strict: true
+      schema:
+        type: object
+        properties:
+          category:
+            type: string
+            enum: [refund, technical, sales, other]
+          urgency:
+            type: string
+            enum: [low, normal, high]
+        required: [category, urgency]
+        additionalProperties: false
+
+  # ── Specialists ──────────────────────────────────────────────────────────────
+  billing:
+    model: worker
+    description: Billing and refunds specialist
+    instruction: |
+      You handle refund, billing, and payment questions. Be precise
+      about amounts and timing. If you can't resolve the issue from
+      the provided information, say what would need to be escalated.
+
+  engineer:
+    model: worker
+    description: Technical troubleshooting specialist
+    instruction: |
+      You diagnose technical issues. Ask for specifics if needed
+      (version, OS, error messages). Propose concrete next steps.
+
+  sales:
+    model: worker
+    description: Sales and pricing specialist
+    instruction: |
+      You answer pricing, plans, and feature questions. Do not quote
+      numbers you don't have — suggest escalating to a human instead.
+
+  fallback:
+    model: worker
+    description: General-purpose responder
+    instruction: |
+      Respond helpfully to messages that don't fit a clear category.
+      Keep it short; ask the user for specifics if you can't help
+      meaningfully.
