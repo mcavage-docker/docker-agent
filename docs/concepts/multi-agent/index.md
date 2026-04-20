@@ -166,12 +166,48 @@ The two are mutually exclusive: a step has either `agent` or `tool`, never both.
 
 ### Template variables
 
-Both `task` (agent steps) and string values in `args` (tool steps) support two template variables:
+Both `task` (agent steps) and string values in `args` (tool steps) support template variables:
 
 - `{{input}}` — the original user input to the pipeline. Available in every step.
-- `{{output}}` — the output of the previous step. For the first step, this equals `{{input}}`.
+- `{{output}}` — the output of the **previous executed step**. Skipped steps are transparent; if step 2 is skipped, step 3's `{{output}}` refers to step 1's output.
+- `{{<name>}}` — any value captured via `as:` in an earlier step (see below).
 
 If an agent step omits `task`, the previous step's output is forwarded to the agent verbatim.
+
+### Capturing outputs with `as:`
+
+Add `as: <name>` to any step to bind its output to a named variable that survives the rest of the pipeline. Later steps can reference it via `{{name}}` in templates, or `name` in a `when:` expression.
+
+- Agent steps with `structured_output:` → the bound value is the **parsed JSON** (a map you can navigate with dotted paths).
+- Agent steps without `structured_output:` → the bound value is the raw string.
+- Tool steps → the runtime **tries to parse** the output as JSON; falls back to string on parse failure.
+
+This asymmetry is deliberate: agents earn typed access by declaring `structured_output:`, while tools get it by convention since tools are deterministic and their outputs are known to the user.
+
+### Conditional execution with `when:`
+
+Add `when: "<CEL expression>"` to any step to make it conditional. Before the step runs, the runtime evaluates the expression; if it returns `false`, the step is skipped. [CEL](https://github.com/google/cel-spec) expressions have access to `input`, `output`, and every `as:` binding declared earlier in the pipeline.
+
+Unlike `task:` templates, `when:` does **not** use `{{...}}` braces — variables are referenced bare (`classification.intent`, not `{{classification.intent}}`).
+
+```yaml
+pipeline:
+  - agent: classifier
+    as: classification
+  - agent: billing
+    when: "classification.intent == 'refund'"
+    task: "Handle this refund: {{input}}"
+  - agent: engineer
+    when: "classification.intent == 'technical'"
+    task: "Diagnose: {{input}}"
+  - agent: fallback
+    when: "!(classification.intent in ['refund', 'technical'])"
+    task: "Respond generically to: {{input}}"
+```
+
+Supported CEL features include string equality, list membership (`in`), logical operators (`&&`, `||`, `!`), arithmetic, regex (`matches`), and the standard macros (`has`, `size`, `exists`, `all`, `filter`, `map`). Use `has(x.field)` to guard access to optional fields so missing data doesn't error out the pipeline.
+
+All `when:` expressions are parsed and type-checked at config load time — syntax errors surface before the pipeline ever runs.
 
 ### Example
 

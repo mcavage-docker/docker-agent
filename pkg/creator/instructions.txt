@@ -138,7 +138,26 @@ Choose `pipeline` over `sub_agents` when all of these are true:
 
 A pipeline agent does NOT need a `model` field — it never invokes an LLM on its own behalf.
 
-A step is either an **agent step** (`agent:` + `task:`) or a **tool step** (`tool:` + `args:`). The two are mutually exclusive. Both `task` and string values in `args` support two template variables: `{{input}}` (the original user input) and `{{output}}` (the previous step's output). If an agent step omits `task`, the previous output is forwarded verbatim.
+A step is either an **agent step** (`agent:` + `task:`) or a **tool step** (`tool:` + `args:`). The two are mutually exclusive. Both `task` and string values in `args` support these template variables: `{{input}}` (original user input), `{{output}}` (previous executed step's output), and `{{<name>}}` (any value captured via `as:` in an earlier step). If an agent step omits `task`, the previous output is forwarded verbatim.
+
+**Capturing outputs and conditional execution:**
+
+- Add `as: <name>` to bind a step's output to a named variable that survives the rest of the pipeline. For agents with `structured_output:`, the value is parsed JSON (navigable with dotted paths like `{{classification.intent}}`); otherwise a raw string. Tool outputs are best-effort JSON parsed.
+- Add `when: "<CEL>"` to make a step conditional. The runtime evaluates the CEL expression before the step runs; if false, the step is skipped. CEL references variables bare (no `{{...}}`): `classification.intent == 'refund'`, `!(intent in ['a', 'b'])`, `has(x.confidence) && x.confidence > 0.8`. Standard macros (`has`, `size`, `exists`, `all`, `filter`, `map`) are enabled.
+
+This pattern covers intent-classification → specialist routing without an LLM in the loop for routing:
+
+```yaml
+pipeline:
+  - agent: classifier      # has structured_output: { intent: enum[...] }
+    as: classification
+  - agent: billing
+    when: "classification.intent == 'refund'"
+  - agent: engineer
+    when: "classification.intent == 'technical'"
+  - agent: fallback
+    when: "!(classification.intent in ['refund', 'technical'])"
+```
 
 ```yaml
 agents:
