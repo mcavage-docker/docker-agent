@@ -1,0 +1,13 @@
+version: "8"
+
+agents:
+  pipe:
+    description: Pipeline referencing a non-existent tool
+    instruction: Runs a pipeline with a bad tool ref.
+    toolsets:
+      - type: memory
+        path: pipe_memory.db
+    pipeline:
+      - tool: not_a_real_tool
+        args:
+          query: "{{input}}"

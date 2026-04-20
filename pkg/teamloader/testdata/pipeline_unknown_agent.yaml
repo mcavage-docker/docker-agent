@@ -1,0 +1,14 @@
+version: "8"
+
+agents:
+  pipe:
+    description: Pipeline referencing a non-existent agent
+    instruction: Runs a pipeline with a bad agent ref.
+    pipeline:
+      - agent: ghost
+        task: "Do something with {{input}}"
+
+  existing:
+    model: openai/gpt-4o-mini
+    description: Real agent
+    instruction: Noop.

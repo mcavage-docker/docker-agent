@@ -254,15 +254,50 @@ func LoadWithConfig(ctx context.Context, agentSource config.Source, runConfig *c
 		}
 	}
 
-	// Validate pipeline step references — all named agents must be locally defined.
+	// Validate pipeline step references. Agent steps must name a locally-defined
+	// agent; tool steps must name a tool exposed by the pipeline agent's own
+	// toolsets. Checking both at load time surfaces typos before any expensive
+	// step (e.g. an LLM agent step) has a chance to run.
 	for _, agentConfig := range cfg.Agents {
-		for i, step := range agentConfig.Pipeline {
-			// Tool steps don't reference agents — skip validation.
-			if step.Agent == "" {
+		if len(agentConfig.Pipeline) == 0 {
+			continue
+		}
+
+		pipeAgent := agentsByName[agentConfig.Name]
+
+		// Resolve available tool names once per pipeline agent, and only when
+		// at least one tool step is present. Calling Tools() starts the
+		// agent's toolsets, which we want to avoid for pipelines that have
+		// only agent steps.
+		var availableTools map[string]struct{}
+		for _, step := range agentConfig.Pipeline {
+			if step.Tool == "" {
 				continue
 			}
-			if _, ok := agentsByName[step.Agent]; !ok {
-				return nil, fmt.Errorf("agent %q: pipeline[%d]: agent %q not found", agentConfig.Name, i, step.Agent)
+			if pipeAgent == nil {
+				break
+			}
+			ts, err := pipeAgent.Tools(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("agent %q: resolving tools for pipeline validation: %w", agentConfig.Name, err)
+			}
+			availableTools = make(map[string]struct{}, len(ts))
+			for _, t := range ts {
+				availableTools[t.Name] = struct{}{}
+			}
+			break
+		}
+
+		for i, step := range agentConfig.Pipeline {
+			switch {
+			case step.Agent != "":
+				if _, ok := agentsByName[step.Agent]; !ok {
+					return nil, fmt.Errorf("agent %q: pipeline[%d]: agent %q not found", agentConfig.Name, i, step.Agent)
+				}
+			case step.Tool != "":
+				if _, ok := availableTools[step.Tool]; !ok {
+					return nil, fmt.Errorf("agent %q: pipeline[%d]: tool %q is not available in %q's toolsets", agentConfig.Name, i, step.Tool, agentConfig.Name)
+				}
 			}
 		}
 	}
