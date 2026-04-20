@@ -216,3 +216,158 @@ agents:
 		})
 	}
 }
+
+func TestValidatePipeline(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  string
+		wantErr string
+	}{
+		{
+			name: "valid mixed agent and tool steps",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - tool: search_memories
+        args:
+          query: "{{input}}"
+      - agent: writer
+        task: "Write: {{output}}"
+      - agent: editor
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+  editor:
+    model: openai/gpt-4o-mini
+    description: editor
+    instruction: noop
+`,
+			wantErr: "",
+		},
+		{
+			name: "pipeline and sub_agents are mutually exclusive",
+			config: `
+version: "8"
+agents:
+  root:
+    model: openai/gpt-4o-mini
+    description: root
+    instruction: noop
+    sub_agents: [worker]
+    pipeline:
+      - agent: worker
+  worker:
+    model: openai/gpt-4o-mini
+    description: worker
+    instruction: noop
+`,
+			wantErr: `agent "root": pipeline and sub_agents are mutually exclusive`,
+		},
+		{
+			name: "pipeline and handoffs are mutually exclusive",
+			config: `
+version: "8"
+agents:
+  root:
+    model: openai/gpt-4o-mini
+    description: root
+    instruction: noop
+    handoffs: [worker]
+    pipeline:
+      - agent: worker
+  worker:
+    model: openai/gpt-4o-mini
+    description: worker
+    instruction: noop
+`,
+			wantErr: `agent "root": pipeline and handoffs are mutually exclusive`,
+		},
+		{
+			name: "step missing both agent and tool",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - task: "orphan"
+`,
+			wantErr: `agent "pipe": pipeline[0]: must specify either agent or tool`,
+		},
+		{
+			name: "step sets both agent and tool",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        tool: search_memories
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `agent "pipe": pipeline[0]: agent and tool are mutually exclusive`,
+		},
+		{
+			name: "tool step carrying task",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - tool: search_memories
+        task: "this is wrong"
+`,
+			wantErr: `agent "pipe": pipeline[0]: task is not valid for tool steps (use args)`,
+		},
+		{
+			name: "agent step carrying args",
+			config: `
+version: "8"
+agents:
+  pipe:
+    description: pipe
+    instruction: noop
+    pipeline:
+      - agent: writer
+        args:
+          foo: bar
+  writer:
+    model: openai/gpt-4o-mini
+    description: writer
+    instruction: noop
+`,
+			wantErr: `agent "pipe": pipeline[0]: args is not valid for agent steps (use task)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var cfg Config
+			err := yaml.Unmarshal([]byte(tt.config), &cfg)
+
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
