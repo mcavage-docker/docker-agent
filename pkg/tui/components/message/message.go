@@ -99,7 +99,7 @@ func (mv *messageModel) Render(width int) string {
 		}
 
 		if msg.SessionPosition == nil {
-			return messageStyle.Width(width).Render(msg.Content)
+			return messageStyle.Width(width).Render(markdown.AddBidiMarkers(msg.Content))
 		}
 
 		// For editable messages, place the pencil icon in the top padding row
@@ -108,6 +108,7 @@ func (mv *messageModel) Render(width int) string {
 		if content == "" {
 			content = msg.Content
 		}
+		content = markdown.AddBidiMarkers(content)
 
 		// Create the edit icon for the top row
 		editIcon := styles.MutedStyle.Render(types.UserMessageEditLabel)

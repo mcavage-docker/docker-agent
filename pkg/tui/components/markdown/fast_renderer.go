@@ -2267,21 +2267,157 @@ func fixHyperlinkWrapping(s string) string {
 	return buf.String()
 }
 
+// rlmPrefix is the UTF-8 encoding of U+200F RIGHT-TO-LEFT MARK.
+// Prepending this to a line that contains RTL text (Arabic, Hebrew, etc.)
+// tells the terminal's bidi algorithm to treat the paragraph as RTL, so
+// characters appear in the correct right-to-left visual order.
+const rlmPrefix = "\u200F"
+
+// AddBidiMarkers prepends a U+200F RIGHT-TO-LEFT MARK to every line in s
+// that contains at least one character from an RTL Unicode script (Arabic,
+// Hebrew, Syriac, Thaana, N'Ko, etc.).
+//
+// This is the minimal fix needed for correct RTL display in terminal emulators
+// that implement the Unicode Bidirectional Algorithm: without an explicit
+// paragraph-direction hint, many terminals default to LTR and display Arabic
+// or Hebrew characters in the wrong (reversed) visual order.
+//
+// Call AddBidiMarkers on any string that will be written to the terminal and
+// that may contain RTL text, after all layout/wrapping has been applied.
+func AddBidiMarkers(s string) string {
+	if s == "" {
+		return s
+	}
+	// Fast path: if the string is ASCII-only it cannot contain RTL characters.
+	isAllASCII := true
+	for i := range len(s) {
+		if s[i] >= utf8.RuneSelf {
+			isAllASCII = false
+			break
+		}
+	}
+	if isAllASCII {
+		return s
+	}
+
+	if !strings.Contains(s, "\n") {
+		if lineContainsRTL(s) {
+			return rlmPrefix + s
+		}
+		return s
+	}
+
+	var result strings.Builder
+	result.Grow(len(s) + 8) // small overhead for RLM bytes
+	start := 0
+	for i := range len(s) + 1 {
+		if i != len(s) && s[i] != '\n' {
+			continue
+		}
+		line := s[start:i]
+		if lineContainsRTL(line) {
+			result.WriteString(rlmPrefix)
+		}
+		result.WriteString(line)
+		if i < len(s) {
+			result.WriteByte('\n')
+		}
+		start = i + 1
+	}
+	return result.String()
+}
+// lineContainsRTL reports whether a rendered line (which may contain ANSI
+// escape sequences) includes any character from a right-to-left Unicode block.
+// ANSI escape sequences are skipped so only visible characters are examined.
+func lineContainsRTL(s string) bool {
+	for i := 0; i < len(s); {
+		// Skip CSI escape sequences (\x1b[...)
+		if s[i] == '\x1b' {
+			if i+1 < len(s) && s[i+1] == '[' {
+				i += 2
+				for i < len(s) && (s[i] < '@' || s[i] > '~') {
+					i++
+				}
+				if i < len(s) {
+					i++
+				}
+				continue
+			}
+			// Skip OSC sequences (\x1b]...\x07 or \x1b]...\x1b\\)
+			if i+1 < len(s) && s[i+1] == ']' {
+				i += 2
+				for i < len(s) {
+					if s[i] == '\x07' {
+						i++
+						break
+					}
+					if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\' {
+						i += 2
+						break
+					}
+					i++
+				}
+				continue
+			}
+			i++
+			continue
+		}
+		// ASCII bytes: never RTL
+		if s[i] < utf8.RuneSelf {
+			i++
+			continue
+		}
+		// Multi-byte rune: decode and check block
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if isRTLRune(r) {
+			return true
+		}
+		i += size
+	}
+	return false
+}
+
+// isRTLRune reports whether r belongs to a right-to-left Unicode script.
+// Covers the most common RTL scripts: Arabic, Hebrew, Syriac, Thaana, N'Ko,
+// Samaritan, and their presentation-form blocks.
+func isRTLRune(r rune) bool {
+	return (r >= 0x0590 && r <= 0x05FF) || // Hebrew
+		(r >= 0x0600 && r <= 0x06FF) || // Arabic
+		(r >= 0x0700 && r <= 0x074F) || // Syriac
+		(r >= 0x0750 && r <= 0x077F) || // Arabic Supplement
+		(r >= 0x0780 && r <= 0x07BF) || // Thaana
+		(r >= 0x07C0 && r <= 0x07FF) || // N'Ko
+		(r >= 0x0800 && r <= 0x083F) || // Samaritan
+		(r >= 0x08A0 && r <= 0x08FF) || // Arabic Extended-A
+		(r >= 0xFB50 && r <= 0xFDFF) || // Arabic Presentation Forms-A
+		(r >= 0xFE70 && r <= 0xFEFF) // Arabic Presentation Forms-B
+}
+
 // padAllLines pads each line to the target width with trailing spaces.
+// Lines that contain RTL characters (Arabic, Hebrew, etc.) are prefixed with
+// a U+200F RIGHT-TO-LEFT MARK so the terminal's bidirectional algorithm
+// renders them in the correct right-to-left visual order.
 func padAllLines(s string, width int) string {
 	if width <= 0 || s == "" {
 		return s
 	}
 
 	if !strings.Contains(s, "\n") {
+		rlm := ""
+		if lineContainsRTL(s) {
+			rlm = rlmPrefix
+		}
 		lineWidth := ansiStringWidth(s)
-		if lineWidth >= width {
+		if lineWidth >= width && rlm == "" {
 			return s
 		}
 		var result strings.Builder
-		result.Grow(len(s) + width - lineWidth)
+		result.Grow(len(rlm) + len(s) + max(width-lineWidth, 0))
+		result.WriteString(rlm)
 		result.WriteString(s)
-		writeSpaces(&result, width-lineWidth)
+		if lineWidth < width {
+			writeSpaces(&result, width-lineWidth)
+		}
 		return result.String()
 	}
 
@@ -2296,6 +2432,13 @@ func padAllLines(s string, width int) string {
 		}
 
 		line := s[start:i]
+
+		// Prepend RLM for RTL lines so the terminal's bidi algorithm renders
+		// Arabic/Hebrew text in right-to-left visual order.
+		if lineContainsRTL(line) {
+			result.WriteString(rlmPrefix)
+		}
+
 		result.WriteString(line)
 
 		lineWidth := ansiStringWidth(line)

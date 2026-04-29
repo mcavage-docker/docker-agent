@@ -1957,3 +1957,161 @@ func BenchmarkStreamingGlamourRenderer(b *testing.B) {
 		}
 	}
 }
+
+// TestRTLArabicTextPreservation verifies that Arabic text passes through the
+// renderer unchanged (byte order preserved) and that each rendered line
+// containing Arabic characters is prefixed with a U+200F RIGHT-TO-LEFT MARK
+// so terminal emulators using the Unicode Bidirectional Algorithm display
+// the text in the correct right-to-left visual order.
+func TestRTLArabicTextPreservation(t *testing.T) {
+	t.Parallel()
+
+	arabic := "واخا، فهمت. غادي نهضر معاك بالدارجة و نكتب بالحروف العربية."
+	r := NewFastRenderer(80)
+	result, err := r.Render(arabic)
+	require.NoError(t, err)
+
+	// The Arabic content must be present and byte-order-correct.
+	// ansi.Strip removes ANSI codes; strings.TrimSpace removes padding/newlines.
+	stripped := strings.TrimSpace(stripANSI(result))
+	// Strip the RLM prefix (U+200F) before comparing to the original text.
+	stripped = strings.TrimPrefix(stripped, "\u200F")
+	assert.Equal(t, arabic, stripped, "Arabic text must pass through unchanged")
+
+	// Every non-empty line that contains Arabic must start with U+200F.
+	for _, line := range strings.Split(result, "\n") {
+		if !lineContainsRTL(line) {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(line, "\u200F"),
+			"RTL line must be prefixed with RLM (U+200F); got: %q", line)
+	}
+}
+
+// TestRTLHebrewTextPreservation verifies that Hebrew text also gets the RLM prefix.
+func TestRTLHebrewTextPreservation(t *testing.T) {
+	t.Parallel()
+
+	hebrew := "שלום עולם, זה טקסט בעברית."
+	r := NewFastRenderer(80)
+	result, err := r.Render(hebrew)
+	require.NoError(t, err)
+
+	for _, line := range strings.Split(result, "\n") {
+		if !lineContainsRTL(line) {
+			continue
+		}
+		assert.True(t, strings.HasPrefix(line, "\u200F"),
+			"Hebrew RTL line must be prefixed with RLM (U+200F); got: %q", line)
+	}
+}
+
+// TestRTLLTRNoMarker verifies that LTR-only text does NOT get an RLM prefix.
+func TestRTLLTRNoMarker(t *testing.T) {
+	t.Parallel()
+
+	english := "Hello, this is plain English text."
+	r := NewFastRenderer(80)
+	result, err := r.Render(english)
+	require.NoError(t, err)
+
+	for _, line := range strings.Split(result, "\n") {
+		assert.False(t, strings.HasPrefix(line, "\u200F"),
+			"LTR line must NOT be prefixed with RLM; got: %q", line)
+	}
+}
+
+// TestAddBidiMarkers verifies the exported AddBidiMarkers helper.
+func TestAddBidiMarkers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "empty string",
+			input: "",
+			want:  "",
+		},
+		{
+			name:  "ASCII only",
+			input: "Hello world",
+			want:  "Hello world",
+		},
+		{
+			name:  "Arabic single line",
+			input: "واخا، فهمت.",
+			want:  "\u200Fواخا، فهمت.",
+		},
+		{
+			name:  "Hebrew single line",
+			input: "שלום עולם",
+			want:  "\u200Fשלום עולם",
+		},
+		{
+			name:  "mixed: Arabic then English lines",
+			input: "واخا، فهمت.\nHello world",
+			want:  "\u200Fواخا، فهمت.\nHello world",
+		},
+		{
+			name:  "multiple Arabic lines",
+			input: "واخا، فهمت.\nغادي نهضر",
+			want:  "\u200Fواخا، فهمت.\n\u200Fغادي نهضر",
+		},
+		{
+			name:  "ANSI + Arabic",
+			input: "\x1b[38;2;192;192;192mواخا، فهمت.\x1b[m",
+			want:  "\u200F\x1b[38;2;192;192;192mواخا، فهمت.\x1b[m",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := AddBidiMarkers(tc.input)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestIsRTLRune checks that the RTL rune classifier is correct for representative characters.
+func TestIsRTLRune(t *testing.T) {
+	t.Parallel()
+
+	rtlCases := []struct {
+		r    rune
+		name string
+	}{
+		{'\u0627', "Arabic ALEF"},
+		{'\u0648', "Arabic WAW"},
+		{'\u05D0', "Hebrew ALEF"},
+		{'\u05E9', "Hebrew SHIN"},
+		{'\u0700', "Syriac"},
+		{'\u0780', "Thaana"},
+		{'\u07C0', "N'Ko"},
+		{'\u0600', "Arabic extended"},
+		{'\uFB50', "Arabic Presentation Forms-A"},
+		{'\uFE70', "Arabic Presentation Forms-B"},
+	}
+	for _, tc := range rtlCases {
+		assert.True(t, isRTLRune(tc.r), "expected %s (U+%04X) to be RTL", tc.name, tc.r)
+	}
+
+	ltrCases := []struct {
+		r    rune
+		name string
+	}{
+		{'A', "ASCII A"},
+		{'z', "ASCII z"},
+		{'0', "digit"},
+		{' ', "space"},
+		{'\n', "newline"},
+		{'\u4E2D', "CJK"},
+		{'\u00E9', "Latin extended é"},
+	}
+	for _, tc := range ltrCases {
+		assert.False(t, isRTLRune(tc.r), "expected %s (U+%04X) to NOT be RTL", tc.name, tc.r)
+	}
+}
